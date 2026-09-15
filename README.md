@@ -1,1 +1,0 @@
-# baseball-score-app
