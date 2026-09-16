@@ -455,10 +455,10 @@ with tab_admin:
             """
             components.html(viewer_html, height=box_height + 20)
 
-        # 右側：付箋タブエディタ
+        # 右側：付箋タブエディタ（フォーム化で画面ジャンプを完全防止）
         with col_grid:
             st.markdown("#### 🎯 打席盤面エディタ")
-            st.caption("タブを指で横にスワイプして選手を選択できます。「要確認」の打席を中心に修正してください。")
+            st.caption("タブを指で横にスワイプして選手を選択し、修正後は「保存」を押してください。")
 
             tab_labels = []
             for idx, player in enumerate(current_players):
@@ -469,7 +469,6 @@ with tab_admin:
                 tab_labels.append(f"{num_str}{p_name}{sub_tag}")
 
             player_tabs = st.tabs(tab_labels)
-            edited_current_players = []
 
             for idx, (p_tab, player) in enumerate(zip(player_tabs, current_players)):
                 with p_tab:
@@ -478,46 +477,51 @@ with tab_admin:
 
                     st.markdown(f"##### **選手情報設定 {'（途中交代・代打）' if is_sub else '（先発）'}**")
 
-                    p_cols = st.columns([1, 2, 3])
-                    u_num = p_cols[0].text_input("背番号", value=str(player.get("uniform_number", "")), key=f"{selected_match_file}_num_{idx}")
-                    p_name = p_cols[1].text_input("選手名（漢字）", value=str(player.get("player_name", "")), key=f"{selected_match_file}_name_{idx}")
-                    hl = p_cols[2].text_input("ハイライトメモ", value=str(player.get("highlight", "")), key=f"{selected_match_file}_hl_{idx}")
+                    # フォーム化：1人分の入力をまとめて受け付け、途中ジャンプを防止
+                    with st.form(key=f"form_player_{selected_match_file}_{idx}"):
+                        p_cols = st.columns([1, 2, 3])
+                        u_num = p_cols[0].text_input("背番号", value=str(player.get("uniform_number", "")), key=f"{selected_match_file}_num_{idx}")
+                        p_name = p_cols[1].text_input("選手名（漢字）", value=str(player.get("player_name", "")), key=f"{selected_match_file}_name_{idx}")
+                        hl = p_cols[2].text_input("ハイライトメモ", value=str(player.get("highlight", "")), key=f"{selected_match_file}_hl_{idx}")
 
-                    stat_c1, stat_c2 = st.columns(2)
-                    rbi_val = stat_c1.number_input("打点 (RBI)", min_value=0, max_value=20, value=int(player.get("rbi", 0)), step=1, key=f"{selected_match_file}_rbi_{idx}")
-                    sb_val = stat_c2.number_input("盗塁数 (SB)", min_value=0, max_value=20, value=int(player.get("stolen_bases", 0)), step=1, key=f"{selected_match_file}_sb_{idx}")
+                        stat_c1, stat_c2 = st.columns(2)
+                        rbi_val = stat_c1.number_input("打点 (RBI)", min_value=0, max_value=20, value=int(player.get("rbi", 0)), step=1, key=f"{selected_match_file}_rbi_{idx}")
+                        sb_val = stat_c2.number_input("盗塁数 (SB)", min_value=0, max_value=20, value=int(player.get("stolen_bases", 0)), step=1, key=f"{selected_match_file}_sb_{idx}")
 
-                    st.markdown("**各イニングの打撃結果（1回〜7回）**")
-                    inn_cols = st.columns(7)
-                    new_innings = {}
-                    for i_idx, inn_str in enumerate(["1", "2", "3", "4", "5", "6", "7"]):
-                        cur_val = player.get("innings", {}).get(inn_str, "なし")
-                        default_idx = RESULT_OPTIONS.index(cur_val) if cur_val in RESULT_OPTIONS else 0
-                        sel = inn_cols[i_idx].selectbox(
-                            f"{inn_str}回",
-                            RESULT_OPTIONS,
-                            index=default_idx,
-                            key=f"{selected_match_file}_inn_{idx}_{inn_str}"
-                        )
-                        new_innings[inn_str] = sel
+                        st.markdown("**各イニングの打撃結果（1回〜7回）**")
+                        inn_cols = st.columns(7)
+                        new_innings = {}
+                        for i_idx, inn_str in enumerate(["1", "2", "3", "4", "5", "6", "7"]):
+                            cur_val = player.get("innings", {}).get(inn_str, "なし")
+                            default_idx = RESULT_OPTIONS.index(cur_val) if cur_val in RESULT_OPTIONS else 0
+                            sel = inn_cols[i_idx].selectbox(
+                                f"{inn_str}回",
+                                RESULT_OPTIONS,
+                                index=default_idx,
+                                key=f"{selected_match_file}_inn_{idx}_{inn_str}"
+                            )
+                            new_innings[inn_str] = sel
 
-                    edited_current_players.append({
-                        "match_date": player.get("match_date", "-"),
-                        "opponent": player.get("opponent", "-"),
-                        "batting_order": order_val,
-                        "uniform_number": u_num,
-                        "player_name": p_name,
-                        "is_substitute": is_sub,
-                        "rbi": rbi_val,
-                        "stolen_bases": sb_val,
-                        "innings": new_innings,
-                        "highlight": hl
-                    })
-
-            st.session_state.all_matches_data[selected_match_file] = edited_current_players
+                        # この選手の更新ボタン
+                        submitted = st.form_submit_button("💾 この選手の変更を保存", use_container_width=True)
+                        if submitted:
+                            st.session_state.all_matches_data[selected_match_file][idx] = {
+                                "match_date": player.get("match_date", "-"),
+                                "opponent": player.get("opponent", "-"),
+                                "batting_order": order_val,
+                                "uniform_number": u_num,
+                                "player_name": p_name,
+                                "is_substitute": is_sub,
+                                "rbi": rbi_val,
+                                "stolen_bases": sb_val,
+                                "innings": new_innings,
+                                "highlight": hl
+                            }
+                            st.success(f"{p_name} 選手のデータを保存しました！")
+                            st.rerun()
 
             st.write("")
-            if st.button("💾 全試合の成績を統合確定・Excelを作成する", type="primary", use_container_width=True):
+            if st.button("📊 全試合の成績を統合確定・Excelを作成する", type="primary", use_container_width=True):
                 all_compiled = []
                 for m_file, p_list in st.session_state.all_matches_data.items():
                     compiled_single = calculate_stats_from_grid(p_list, match_file_name=m_file)
