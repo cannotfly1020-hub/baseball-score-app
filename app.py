@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
-    page_title="学童野球スコア集計＆卒団アルバム",
+    page_title="学童野球スコア集計＆デジタル選手名鑑",
     page_icon="⚾️",
     layout="wide",
 )
@@ -67,7 +67,7 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 # ==========================================
-# 妥協なし・打点＆盗塁対応 精度研磨プロンプト（完全維持）
+# 妥協なし・打点＆盗塁対応 精度研磨プロンプト
 # ==========================================
 SYSTEM_PROMPT = """
 あなたは学童野球の手書きスコアブック（早稲田式）の解析専門AIです。
@@ -327,7 +327,6 @@ with tab_admin:
         st.divider()
         match_files = list(st.session_state.all_matches_data.keys())
         
-        # 試合選択切り替え＆表示設定
         top_c1, top_c2 = st.columns([2, 1])
         selected_match_file = top_c1.selectbox(
             "📁 確認・編集する試合を選択",
@@ -355,7 +354,6 @@ with tab_admin:
                 st.session_state.all_matches_data[selected_match_file].append(new_player_template)
                 st.rerun()
 
-        # レイアウト分割
         col_img, col_grid = st.columns([1.1, 1.3])
 
         # 画像表示（スマホ固定モード対応）
@@ -363,7 +361,6 @@ with tab_admin:
             st.markdown(f"#### 📷 原本画像: `{selected_match_file}`")
             zoom_val = st.slider("🔍 拡大率", min_value=100, max_value=350, value=150, step=25, format="%d%%")
             
-            # スマホ固定モード時は高さを抑えてスクロール追従
             box_height = 320 if is_mobile_sticky else 620
             sticky_class = "sticky-mobile-viewer" if is_mobile_sticky else ""
 
@@ -452,7 +449,7 @@ with tab_admin:
             st.download_button(
                 label=f"📥 全{len(st.session_state.all_matches_data)}試合分 選手名別シート付きExcelをダウンロード",
                 data=excel_data,
-                file_name="卒団生_通算打撃成績一覧.xlsx",
+                file_name="チーム通算打撃成績一覧.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -490,7 +487,7 @@ with tab_kids:
             c4.metric("スピードスター賞（盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
         st.divider()
-        st.subheader("⚾️ 卒団記念 デジタル選手名鑑（全試合通算）")
+        st.subheader("⚾️ チーム デジタル選手名鑑（全試合通算）")
         selected_player = st.selectbox("選手を選択してください（名前で通算集計）", players)
         player_data = df[df["player_name"] == selected_player]
 
