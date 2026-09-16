@@ -1,10 +1,13 @@
 import io
 import json
+import cv2
 from google import genai
 from google.genai import types
+import numpy as np
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
+from PIL import Image
 import streamlit as st
 
 st.set_page_config(
@@ -15,6 +18,8 @@ st.set_page_config(
 
 if "records" not in st.session_state:
     st.session_state.records = []
+if "edited_df" not in st.session_state:
+    st.session_state.edited_df = None
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
@@ -22,135 +27,166 @@ if not api_key:
 
 client = genai.Client(api_key=api_key) if api_key else None
 
+
+def extract_red_highlights(image_bytes):
+    """
+    照明ムラや薄いボールペン・朱色・ピンクがかった赤線も漏らさず拾えるよう、
+    HSV色空間の範囲を大幅に拡大し、線を太く強調する
+    """
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+    # 赤〜朱色〜赤紫を広くカバーする2つの範囲
+    lower_red1 = np.array([0, 40, 40])
+    upper_red1 = np.array([15, 255, 255])
+    lower_red2 = np.array([150, 40, 40])
+    upper_red2 = np.array([180, 255, 255])
+
+    mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
+    mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+    mask = mask1 | mask2
+
+    # 細いボールペン線を2ピクセル膨張させてクッキリ可視化
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=2)
+
+    # 元画像の赤線部分のみを抽出し、背景を白くしてコントラストを最大化
+    white_bg = np.full_like(img, 255)
+    res = np.where(mask[:, :, np.newaxis] == 255, img, white_bg)
+
+    _, buffer = cv2.imencode(".jpg", res)
+    return buffer.tobytes()
+
+
 SYSTEM_PROMPT = """
-あなたは学童野球の手書きスコアブック（早稲田式）の打席明細記録員です。
-選手の大切な卒団記録となるため、推測・捏造・適当な補完は一切許されません。
-合計の集計計算はシステムが行うため、あなたは【各イニングのマス目に何が書かれているか】を1打席ずつ客観的に言語化して抽出してください。
+あなたは学童野球手書きスコア（早稲田式）の「赤ペン線・打席詳細の精密鑑定員」です。
+提供される画像は以下の2枚です：
+- 1枚目: 元のスコアブック画像（選手名や鉛筆文字を確認）
+- 2枚目: 赤ペンインクのみを太く浮き彫りにした画像（ダイヤモンドの赤線を確認）
 
-【最重要：選手名・背番号の厳格な分離（二段書きの選手交代）】
-- 打順欄に上下二段で名前がある場合、背番号が異なれば完全に別人の選手です。
-  必ず「先発選手（上段）」と「交代選手（下段）」を別々の選手オブジェクトとして出力してください。
-  （例: 9番枠の背番号19と背番号21は別人）
-- 先発選手: 交代前のイニング（1〜3回など）の打席のみを at_bats_details に含める。
-- 交代選手: 赤字で「代打」「PH」「L」とある打席、または4回以降の交代後の打席のみを含める。
+あなたに「合計計算」や「安打の勝手な判断」は求めません。
+各打席について【ダイヤモンドの赤線がどこまで伸びているか】および【鉛筆の文字】をありのまま回答してください。
 
-【赤ペン表記の厳格ルール】
-1. 赤線のダイヤモンド結線（安打種別・進塁）:
-   - hit_type は "single"（単打/1H）, "double"（2塁打/2H）, "triple"（3塁打/3H）, "homerun"（本塁打/HR）, "none"（安打なし）から選択。
-   - 右下一辺のみ赤線: hit_type="single"
-   - 二塁（上頂点）まで連続赤線: hit_type="double"
-   - 三塁（左頂点）まで連続赤線: hit_type="triple"（例: 4番打者）
-   - ダイヤモンドを赤線でぐるっと一周: 本塁生還のため is_run=true（得点）。
-     ※出塁が四球(B)や死球(DB)、凡打・失策等の場合は後続による生還なので hit_type="none"、is_run=true。
-     ※自身の打撃で一周した場合のみ hit_type="homerun"、is_run=true。
+【赤線の到達位置の判定ルール（2枚目の強調画像で必ず確認すること）】
+各打席のダイヤモンド枠において、赤線がどこまで結線されているかを red_line_to に厳密に記録してください：
+- "NONE": 赤線なし（アウト、単なる凡打など）
+- "1B": 一塁（右下の辺）のみ赤線
+- "2B": 一塁から二塁（真上の頂点）まで連続して赤線が引かれている
+- "3B": 一塁〜二塁〜三塁（左端の頂点）まで連続して赤線が引かれている（例: 4番打者の打席）
+- "HOME": 四角形（ダイヤモンド）の四辺すべてが赤線で一周囲まれている（本塁生還・得点）
 
-2. 赤い波線（クネクネした区切り線）:
-   - 打席付近にある赤い波線（例: 5番打者付近）は「相手投手の交代」を示す区切り線です。打撃結果ではありません。
+※注意：
+- 5番打者のマス付近にある「波線（クネクネ線）」は相手投手交代の印です。red_line_to には含めず "NONE" としてください。
+- 四球(B)や死球(DB)で出塁した後に一周している場合も、赤線が一周していれば red_line_to="HOME" で問題ありません（安打か得点かの判定はシステム側で行います）。
 
-3. 括弧書き数字「(数字)」の除外:
-   - 「(6)」「(8)」「(9)」等は、その打順の選手の打撃で走者が進塁したことを示す「進塁責任打者」の記録です。打者本人の打撃結果や守備番号ではありません。
+【打順枠の二段書き（選手交代）】
+- 上下二段に選手が書かれている場合、背番号が違えば別人です。上段（先発）と下段（交代/代打）を別オブジェクトとして出力してください。
+- 例: 9番枠の上段・背番号19と下段・背番号21は完全に別人です。
 
-4. 凡打・三振記号:
-   - 「K」「Ⓚ」: 三振（result="三振"）
-   - 「四」「B」: 四球（result="四球"）
-   - 「DB」「死」: 死球（result="死球"）
-   - 「3A」「1A」「4-3」等: 内野ゴロ・凡打（result="凡打"）
-   - 丸囲み数字（①②③）: その回のアウトカウント
+【鉛筆文字の識別】
+- "K" / "Ⓚ": 三振
+- "B" / "四": 四球
+- "DB" / "死": 死球
+- "3A", "1A", "4-3", "6-4-3": 凡打
+- "(6)", "(8)", "(9)" 等のカッコ付き数字は進塁打者の記号なので無視してください。
 
 【出力フォーマット（JSON配列のみ返却）】
-各選手の各打席を言語化したリストとして出力してください。合計値の計算は不要です。
 [
   {
-    "match_date": "試合日（不明なら UNREADABLE）",
-    "opponent": "相手チーム名（不明なら UNREADABLE）",
+    "match_date": "試合日",
+    "opponent": "相手チーム名",
     "batting_order": 打順番号,
     "uniform_number": "背番号",
     "player_name": "選手名",
     "at_bats_details": [
       {
-        "inning": イニング番号(数値),
-        "raw_text": "マス目の筆跡メモ（例: (8)B, 4-3①, (6)2TO など）",
-        "result": "結果（例: 四球, 三振, 単打, 二塁打, 三塁打, 本塁打, 凡打, 失策出塁, 不明）",
-        "hit_type": "single | double | triple | homerun | none",
+        "inning": イニング番号,
+        "pencil_result": "鉛筆文字（例: B, K, 4-3, 3TO など）",
+        "red_line_to": "NONE | 1B | 2B | 3B | HOME",
         "is_walk": true/false（四球ならtrue）,
         "is_dead_ball": true/false（死球ならtrue）,
         "is_strikeout": true/false（三振ならtrue）,
-        "is_run": true/false（生還・得点していればtrue）,
-        "stolen_bases": その打席での盗塁数(0または数値),
-        "rbi": その打席での打点(0または数値),
-        "note": "判定理由や補足（例: 赤線一周で生還）"
+        "stolen_bases": 0,
+        "rbi": 0
       }
     ],
-    "highlight": "その試合の印象的な好プレー（例: 4回裏の左越え適時3塁打）",
-    "is_unreadable": 読めない打席があれば true,
-    "unreadable_note": "読めない箇所や理由"
+    "highlight": "好プレー（例: 4回裏の3塁打など）"
   }
 ]
 """
 
 
 def summarize_player_records(raw_records):
-    """AIが言葉にした打席明細から、Python側で確実に合計値を計算する"""
+    """AIが判定した「赤線の到達位置」と「文字」から、Pythonが安打・得点・打数を論理計算する"""
     summarized = []
     for p in raw_records:
         details = p.get("at_bats_details", []) or []
 
-        pa = len(details)  # 打席数
-        ab = 0  # 打数
-        hits = 0  # 単打
-        doubles = 0  # 2塁打
-        triples = 0  # 3塁打
-        hrs = 0  # 本塁打
-        so = 0  # 三振
-        bb = 0  # 四球
-        hbp = 0  # 死球
-        sb = 0  # 盗塁
-        rbi = 0  # 打点
-        runs = 0  # 得点
+        pa = len(details)
+        ab = 0
+        hits = 0
+        doubles = 0
+        triples = 0
+        hrs = 0
+        so = 0
+        bb = 0
+        hbp = 0
+        sb = 0
+        rbi = 0
+        runs = 0
 
         detail_texts = []
 
         for d in details:
             inning = d.get("inning", "?")
-            res = d.get("result", "不明")
-            ht = d.get("hit_type", "none")
+            pencil = d.get("pencil_result", "")
+            red = d.get("red_line_to", "NONE")
 
-            # 打席の言葉まとめ
-            run_mark = " (生還)" if d.get("is_run") else ""
-            detail_texts.append(f"{inning}回:{res}{run_mark}")
+            is_w = d.get("is_walk", False) or (pencil in ["B", "四"])
+            is_db = d.get("is_dead_ball", False) or (pencil in ["DB", "死"])
+            is_k = d.get("is_strikeout", False) or ("K" in pencil)
+
+            # 得点（ホーム生還）判定: 赤線が一周していれば得点
+            is_run = (red == "HOME")
+            if is_run:
+                runs += 1
 
             # 四死球・三振
-            if d.get("is_walk"):
+            if is_w:
                 bb += 1
-            elif d.get("is_dead_ball"):
+                res_str = "四球"
+            elif is_db:
                 hbp += 1
+                res_str = "死球"
             else:
-                # 四死球・犠打等以外は打数にカウント
-                if res not in ["犠打", "犠飛"]:
-                    ab += 1
+                # 四死球以外は打数加算
+                ab += 1
+                if is_k:
+                    so += 1
+                    res_str = "三振"
+                elif red == "3B":
+                    triples += 1
+                    res_str = "3塁打"
+                elif red == "2B":
+                    doubles += 1
+                    res_str = "2塁打"
+                elif red == "1B":
+                    hits += 1
+                    res_str = "単打"
+                elif red == "HOME":
+                    # 一周で四死球でない場合は本塁打
+                    hrs += 1
+                    res_str = "本塁打"
+                else:
+                    res_str = f"凡打({pencil})" if pencil else "凡打"
 
-            if d.get("is_strikeout"):
-                so += 1
+            run_str = " [生還]" if is_run else ""
+            detail_texts.append(f"{inning}回:{res_str}{run_str}")
 
-            # 安打
-            if ht == "single":
-                hits += 1
-            elif ht == "double":
-                doubles += 1
-            elif ht == "triple":
-                triples += 1
-            elif ht == "homerun":
-                hrs += 1
-
-            # 得点・盗塁・打点
-            if d.get("is_run"):
-                runs += 1
             sb += int(d.get("stolen_bases") or 0)
             rbi += int(d.get("rbi") or 0)
-
-        # 読めない箇所がある場合の処理
-        is_unreadable = p.get("is_unreadable", False)
-        unreadable_note = p.get("unreadable_note", "")
 
         summarized.append(
             {
@@ -159,6 +195,7 @@ def summarize_player_records(raw_records):
                 "batting_order": p.get("batting_order"),
                 "uniform_number": p.get("uniform_number"),
                 "player_name": p.get("player_name"),
+                "at_bats_summary": " / ".join(detail_texts),
                 "plate_appearances": pa,
                 "at_bats": ab,
                 "hits": hits,
@@ -171,41 +208,15 @@ def summarize_player_records(raw_records):
                 "stolen_bases": sb,
                 "rbi": rbi,
                 "runs": runs,
-                "at_bats_summary": " / ".join(detail_texts),
                 "highlight": p.get("highlight", ""),
-                "is_unreadable": is_unreadable,
-                "unreadable_note": unreadable_note,
             }
         )
     return summarized
 
 
-def create_excel(records):
+def create_excel_from_df(df):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
-
-    yellow_fill = PatternFill(
-        start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"
-    )
-    red_font = Font(color="9C0006", bold=True)
-
-    players = {}
-    for r in records:
-        name = str(r.get("player_name") or "未登録").strip()
-        num = str(r.get("uniform_number") or "").strip()
-        order = str(r.get("batting_order") or "").strip()
-
-        if num and num != "UNREADABLE":
-            sheet_title = f"{num}_{name}"
-        elif order:
-            sheet_title = f"{order}番_{name}"
-        else:
-            sheet_title = name
-
-        for ch in [":", "\\", "/", "?", "*", "[", "]"]:
-            sheet_title = sheet_title.replace(ch, "")
-
-        players.setdefault(sheet_title, []).append(r)
 
     headers = [
         "日付",
@@ -213,10 +224,10 @@ def create_excel(records):
         "背番号",
         "選手名",
         "打順",
-        "打席詳細（各回の結果）",
+        "打席詳細",
         "打席",
         "打数",
-        "安打",
+        "単打",
         "2塁打",
         "3塁打",
         "本塁打",
@@ -227,11 +238,19 @@ def create_excel(records):
         "打点",
         "得点",
         "ハイライト",
-        "要確認メモ",
     ]
 
-    for sheet_name, matches in players.items():
-        ws = wb.create_sheet(title=sheet_name[:30])
+    players = df.groupby(["uniform_number", "player_name"])
+
+    for (num, name), group in players:
+        num_str = str(num).strip() if pd.notna(num) else ""
+        name_str = str(name).strip() if pd.notna(name) else "未登録"
+        sheet_title = f"{num_str}_{name_str}" if num_str else name_str
+
+        for ch in [":", "\\", "/", "?", "*", "[", "]"]:
+            sheet_title = sheet_title.replace(ch, "")
+
+        ws = wb.create_sheet(title=sheet_title[:30])
         ws.append(headers)
 
         for col in range(1, len(headers) + 1):
@@ -239,67 +258,52 @@ def create_excel(records):
             c.font = Font(bold=True)
             c.alignment = Alignment(horizontal="center")
 
-        for m in matches:
+        for _, row_data in group.iterrows():
             row = [
-                m.get("match_date"),
-                m.get("opponent"),
-                m.get("uniform_number"),
-                m.get("player_name"),
-                m.get("batting_order"),
-                m.get("at_bats_summary"),
-                m.get("plate_appearances"),
-                m.get("at_bats"),
-                m.get("hits"),
-                m.get("doubles"),
-                m.get("triples"),
-                m.get("homeruns"),
-                m.get("strikeouts"),
-                m.get("walks"),
-                m.get("dead_ball"),
-                m.get("stolen_bases"),
-                m.get("rbi"),
-                m.get("runs"),
-                m.get("highlight", ""),
-                m.get("unreadable_note", ""),
+                row_data.get("match_date"),
+                row_data.get("opponent"),
+                row_data.get("uniform_number"),
+                row_data.get("player_name"),
+                row_data.get("batting_order"),
+                row_data.get("at_bats_summary"),
+                row_data.get("plate_appearances"),
+                row_data.get("at_bats"),
+                row_data.get("hits"),
+                row_data.get("doubles"),
+                row_data.get("triples"),
+                row_data.get("homeruns"),
+                row_data.get("strikeouts"),
+                row_data.get("walks"),
+                row_data.get("dead_ball"),
+                row_data.get("stolen_bases"),
+                row_data.get("rbi"),
+                row_data.get("runs"),
+                row_data.get("highlight", ""),
             ]
             ws.append(row)
-            curr_row = ws.max_row
-
-            for idx, val in enumerate(row, start=1):
-                cell = ws.cell(row=curr_row, column=idx)
-                if val is None or val == "UNREADABLE":
-                    cell.value = "要確認"
-                    cell.fill = yellow_fill
-                    cell.font = red_font
-                    cell.alignment = Alignment(horizontal="center")
 
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
 
 
-# タブ分離
 tab_admin, tab_kids = st.tabs(
     ["📁 役員用（スコア解析＆Excel出力）", "🏆 選手名鑑＆アワード"]
 )
 
 # ==========================================
-# ① 役員・集計担当用画面
+# ① 役員用画面
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア自動解析（打席明細付き）")
-    st.caption(
-        "AIが各イニングの打席結果を言語化し、Pythonが正確に合計成績を算出します。"
-    )
+    st.subheader("手書きスコア自動解析（赤線ハイパーブースト版）")
+    st.caption("赤インク検出範囲を広げ、太く強調した画像と照合して解析します。")
 
     if not client:
-        st.warning(
-            "Gemini APIキーを設定してください（Secrets または サイドバー）。"
-        )
+        st.warning("Gemini APIキーを設定してください。")
         st.stop()
 
     uploaded_files = st.file_uploader(
-        "スコアブック写真を選択（複数可）",
+        "スコアブック写真を選択",
         type=["jpg", "jpeg", "png"],
         accept_multiple_files=True,
     )
@@ -311,19 +315,25 @@ with tab_admin:
             status = st.empty()
 
             for i, f in enumerate(uploaded_files):
-                status.text(
-                    f"解析中 ({i+1}/{len(uploaded_files)}): {f.name}..."
-                )
+                status.text(f"赤線強化中 ({i+1}/{len(uploaded_files)}): {f.name}...")
                 img_bytes = f.read()
+
+                # 赤ペン強調画像を生成
+                red_highlight_bytes = extract_red_highlights(img_bytes)
+
+                # 画面上でも「赤線がどう見えているか」を確認できるように表示
+                with st.expander(f"🔍 {f.name} の赤ペン抽出プレビュー（AIに送る強調画像）"):
+                    col_img1, col_img2 = st.columns(2)
+                    col_img1.image(img_bytes, caption="元画像", use_container_width=True)
+                    col_img2.image(red_highlight_bytes, caption="赤線抽出・強調画像", use_container_width=True)
 
                 try:
                     res = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(
-                                data=img_bytes, mime_type="image/jpeg"
-                            ),
-                            "このスコアブックの全出場選手の打席明細を漏れなく抽出してください。",
+                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=red_highlight_bytes, mime_type="image/jpeg"),
+                            "1枚目の元画像と、2枚目の赤ペン強調画像を照合し、各打席の赤線の到達位置(1B, 2B, 3B, HOME, NONE)と鉛筆文字を漏れなく抽出してください。",
                         ],
                         config=types.GenerateContentConfig(
                             system_instruction=SYSTEM_PROMPT,
@@ -332,7 +342,6 @@ with tab_admin:
                         ),
                     )
                     raw_data = json.loads(res.text)
-                    # Python側で確実に合算
                     calc_data = summarize_player_records(raw_data)
                     new_records.extend(calc_data)
                 except Exception as e:
@@ -343,55 +352,75 @@ with tab_admin:
             status.empty()
             if new_records:
                 st.session_state.records = new_records
-                st.success("🎉 全選手の打席明細と言語化解析が完了しました！")
+                st.session_state.edited_df = pd.DataFrame(new_records)
+                st.success("🎉 赤線鑑定と成績計算が完了しました！")
 
     if st.session_state.records:
-        st.markdown("### 📋 解析結果プレビュー（打席詳細）")
-        df_preview = pd.DataFrame(st.session_state.records)[
-            [
-                "uniform_number",
-                "player_name",
-                "at_bats_summary",
-                "at_bats",
-                "hits",
-                "doubles",
-                "triples",
-                "homeruns",
-                "walks",
-                "runs",
-            ]
-        ]
-        df_preview.columns = [
-            "背番号",
-            "選手名",
-            "打席明細",
-            "打数",
-            "単打",
-            "2塁打",
-            "3塁打",
-            "本塁打",
-            "四球",
-            "得点",
-        ]
-        st.dataframe(df_preview, use_container_width=True)
+        st.markdown("### ✏️ 成績確認・手動修正テーブル")
+        st.caption("AIが読み取った打席明細です。表のセルをクリックして修正できます。")
 
-        excel_file = create_excel(st.session_state.records)
+        display_columns = [
+            "uniform_number",
+            "player_name",
+            "at_bats_summary",
+            "plate_appearances",
+            "at_bats",
+            "hits",
+            "doubles",
+            "triples",
+            "homeruns",
+            "walks",
+            "runs",
+            "highlight",
+        ]
+
+        if st.session_state.edited_df is None:
+            st.session_state.edited_df = pd.DataFrame(st.session_state.records)
+
+        edited_df = st.data_editor(
+            st.session_state.edited_df[display_columns],
+            column_config={
+                "uniform_number": "背番号",
+                "player_name": "選手名",
+                "at_bats_summary": "打席明細（各回の結果）",
+                "plate_appearances": "打席",
+                "at_bats": "打数",
+                "hits": "単打",
+                "doubles": "2塁打",
+                "triples": "3塁打",
+                "homeruns": "本塁打",
+                "walks": "四球",
+                "runs": "得点",
+                "highlight": "ハイライト",
+            },
+            use_container_width=True,
+            num_rows="dynamic",
+        )
+
+        st.session_state.edited_df.update(edited_df)
+
+        excel_file = create_excel_from_df(st.session_state.edited_df)
         st.download_button(
-            label="📥 選手別シート付きExcelをダウンロード",
+            label="📥 修正を反映したExcelをダウンロード",
             data=excel_file,
             file_name="卒団生_打撃成績一覧.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
 # ==========================================
-# ② 子どもたち・指導者用画面
+# ② 選手名鑑＆アワード
 # ==========================================
 with tab_kids:
-    if not st.session_state.records:
+    active_df = (
+        st.session_state.edited_df
+        if st.session_state.edited_df is not None
+        else pd.DataFrame(st.session_state.records)
+    )
+
+    if active_df.empty:
         st.info("👈 まず「役員用」タブでスコアを解析してください。")
     else:
-        df = pd.DataFrame(st.session_state.records)
-
+        df = active_df.copy()
         df["display_name"] = (
             df["uniform_number"].fillna("").astype(str)
             + " "
@@ -409,20 +438,16 @@ with tab_kids:
             col1.metric("チーム最多安打", f"{hit_leaders.index[0]} 選手", f"{int(hit_leaders.iloc[0])} 本")
 
         sb_leaders = (
-            df.groupby("display_name")["stolen_bases"]
-            .sum()
-            .sort_values(ascending=False)
+            df.groupby("display_name")["stolen_bases"].sum().sort_values(ascending=False)
         )
         if not sb_leaders.empty and sb_leaders.iloc[0] > 0:
-            col2.metric("スピードスター賞（最多盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
+            col2.metric("スピードスター賞", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
         hr_leaders = (
-            df.groupby("display_name")["homeruns"]
-            .sum()
-            .sort_values(ascending=False)
+            df.groupby("display_name")["homeruns"].sum().sort_values(ascending=False)
         )
         if not hr_leaders.empty and hr_leaders.iloc[0] > 0:
-            col3.metric("スラッガー賞（本塁打）", f"{hr_leaders.index[0]} 選手", f"{int(hr_leaders.iloc[0])} 本")
+            col3.metric("スラッガー賞", f"{hr_leaders.index[0]} 選手", f"{int(hr_leaders.iloc[0])} 本")
 
         st.divider()
 
