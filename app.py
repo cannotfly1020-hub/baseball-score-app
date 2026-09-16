@@ -26,7 +26,7 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 # ==========================================
-# 妥協なし・詳細ルール完全網羅プロンプト
+# 妥協なし・詳細ルール完全網羅プロンプト（一切省略なし）
 # ==========================================
 SYSTEM_PROMPT = """
 あなたは学童野球の手書きスコアブック（早稲田式）の解析専門AIです。
@@ -212,11 +212,11 @@ tab_admin, tab_kids = st.tabs(
 )
 
 # ==========================================
-# ① 役員用（画像照合 ＋ イニング別ポチポチ確定）
+# ① 役員用（画像照合 ＋ 付箋タブ形式ポチポチ確定）
 # ==========================================
 with tab_admin:
     st.subheader("手書きスコア入力盤面（画像照合 ＋ ポチポチ確定）")
-    st.caption("AIが選手名やイニングごとの打席結果（1回〜7回）を下書きします。原本画像を見ながらプルダウンをポチポチ選んで確定できます。")
+    st.caption("AIが選手名やイニングごとの打席結果（1回〜7回）を下書きします。付箋タブで選手を切り替えながら、プルダウンでサッと直して確定できます。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -245,11 +245,11 @@ with tab_admin:
                     )
                     parsed = json.loads(res.text)
                     st.session_state.matches_data = parsed
-                    st.success("✅ 下書きが完了しました！下の照合盤面で確認・微修正してください。")
+                    st.success("✅ 下書きが完了しました！下の付箋タブで選手を切り替えて確認・微修正してください。")
                 except Exception as e:
                     st.error(f"解析エラー: {e}")
 
-        # 照合・ポチポチ編集エリア
+        # 照合・付箋（タブ）形式編集エリア
         if st.session_state.matches_data:
             st.divider()
             col_img, col_grid = st.columns([1, 1.4])
@@ -259,19 +259,28 @@ with tab_admin:
                 st.image(img, use_container_width=True)
 
             with col_grid:
-                st.markdown("#### 🎯 打席盤面エディタ（確認・修正）")
-                st.caption("上部の表記はスコアの列に合わせた「1回〜7回」です。プルダウンで結果を直せます。")
+                st.markdown("#### 🎯 打席盤面エディタ（付箋タブで選手選択）")
+                st.caption("選手名の付箋（タブ）をクリックすると、その選手の打席結果（1回〜7回）が表示されます。")
 
-                edited_players = []
+                # 選手ごとの付箋（タブタイトル）リストを作成
+                tab_labels = []
                 for idx, player in enumerate(st.session_state.matches_data):
-                    is_sub = player.get("is_substitute", False)
-                    sub_label = "【交代/代打】" if is_sub else ""
                     order_val = player.get("batting_order", idx + 1)
-                    
-                    with st.expander(
-                        f"打順{order_val}: #{player.get('uniform_number', '')} {player.get('player_name', '選手')} {sub_label}",
-                        expanded=True
-                    ):
+                    p_name = player.get("player_name", "選手")
+                    sub_tag = "(代)" if player.get("is_substitute") else ""
+                    tab_labels.append(f"{order_val}番 {p_name}{sub_tag}")
+
+                # 付箋（タブ）を生成
+                player_tabs = st.tabs(tab_labels)
+                edited_players = []
+
+                for idx, (p_tab, player) in enumerate(zip(player_tabs, st.session_state.matches_data)):
+                    with p_tab:
+                        is_sub = player.get("is_substitute", False)
+                        order_val = player.get("batting_order", idx + 1)
+
+                        st.markdown(f"##### **【{order_val}番打者】 {'途中交代・代打' if is_sub else '先発出場'}**")
+
                         p_cols = st.columns([1, 2, 3])
                         u_num = p_cols[0].text_input("背番号", value=player.get("uniform_number", ""), key=f"num_{idx}")
                         p_name = p_cols[1].text_input("選手名", value=player.get("player_name", ""), key=f"name_{idx}")
@@ -295,11 +304,13 @@ with tab_admin:
                             "batting_order": order_val,
                             "uniform_number": u_num,
                             "player_name": p_name,
+                            "is_substitute": is_sub,
                             "innings": new_innings,
                             "highlight": hl
                         })
 
-                if st.button("💾 この内容で成績を確定・Excelを作成する", type="primary"):
+                st.write("")
+                if st.button("💾 この内容で成績を確定・Excelを作成する", type="primary", use_container_width=True):
                     st.session_state.matches_data = edited_players
                     compiled = calculate_stats_from_grid(edited_players)
                     st.session_state["compiled_records"] = compiled
