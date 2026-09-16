@@ -1,11 +1,13 @@
 import io
 import json
+import base64
 from google import genai
 from google.genai import types
 import openpyxl
 from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
@@ -26,11 +28,11 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 # ==========================================
-# 妥協なし・精度研磨プロンプト
+# 妥協なし・打点＆盗塁対応 精度研磨プロンプト
 # ==========================================
 SYSTEM_PROMPT = """
 あなたは学童野球の手書きスコアブック（早稲田式）の解析専門AIです。
-画像から出場選手全員（先発・交代選手・代打を漏れなく）の「イニング別打撃結果」および個人成績を下書きデータとして正確に抽出し、指定のJSON配列のみを出力してください。
+画像から出場選手全員（先発・交代選手・代打を漏れなく）の「イニング別打撃結果」「打点」「盗塁数」および個人成績を下書きデータとして正確に抽出し、指定のJSON配列のみを出力してください。
 
 【選手名・背番号の網羅（最重要・漏れ厳禁）】
 1. 打順欄が上下二段書きになっている場合、上段の「先発選手」だけでなく、下段に書かれた「交代選手・代打選手」も絶対に漏らさず別の選手オブジェクトとして抽出してください。
@@ -51,6 +53,12 @@ SYSTEM_PROMPT = """
 - 一塁〜二塁〜三塁〜本塁まで赤線で四角を一周囲んでいる: 本塁打（ランニングホームラン含む）
 ※黒鉛筆でゴロやフライ等の凡打記号（3A、4-3、Kなど）が書かれていても、赤線でダイヤモンドが結線されている場合は安打の記録（単打・2塁打・3塁打・本塁打）を最優先してください。
 ※単なる暴投(wp)や盗塁(S)による進塁線と、打者自身の安打打球による結線を混同しないでください。
+
+【打点および盗塁の判定ルール】
+1. 打点 (rbi):
+   - 安打（赤線）や適時打の際、マス目周辺や打点欄に記された数字、あるいは得点が入ったことが明確なタイムリー打席から試合全体の合計打点を計算してください（不明・なしなら0）。
+2. 盗塁 (stolen_bases):
+   - マス目内のダイヤモンド進塁線周辺に「S」「〄」などの盗塁記号がある場合、その個数をカウントして合計盗塁数としてください（不明・なしなら0）。
 
 【括弧書き数字「(数字)」の解釈】
 - マス目内に書かれている「(6)」「(8)」「(9)」などの括弧付き数字は、「その打順の選手の打撃や進塁打によって次の塁へ進んだこと」を示す進塁責任打者の記録です。
@@ -77,6 +85,8 @@ SYSTEM_PROMPT = """
     "uniform_number": "背番号（不明なら空文字）",
     "player_name": "選手名",
     "is_substitute": 交代選手なら true / 先発なら false,
+    "rbi": 打点数(数値),
+    "stolen_bases": 盗塁数(数値),
     "innings": {
       "1": "単打 / 2塁打 / 3塁打 / 本塁打 / 四球 / 死球 / 三振 / 凡打 / 犠打 / なし",
       "2": "なし",
@@ -149,8 +159,8 @@ def calculate_stats_from_grid(grid_players):
             "strikeouts": so,
             "walks": bb,
             "dead_ball": db,
-            "stolen_bases": 0,
-            "rbi": 0,
+            "stolen_bases": int(p.get("stolen_bases", 0)),
+            "rbi": int(p.get("rbi", 0)),
             "runs": 0,
             "highlight": p.get("highlight", "")
         })
@@ -173,7 +183,6 @@ def create_excel_from_compiled(all_records):
     ]
 
     for player_name, matches in players.items():
-        # シート名は選手名（最大30文字）
         sheet_title = player_name[:30] if player_name else "未登録"
         ws = wb.create_sheet(title=sheet_title)
         ws.append(headers)
@@ -214,11 +223,11 @@ tab_admin, tab_kids = st.tabs(
 )
 
 # ==========================================
-# ① 役員用（画像照合 ＋ 付箋タブ形式ポチポチ確定）
+# ① 役員用（画像ズーム照合 ＋ 付箋タブ形式ポチポチ確定）
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア入力盤面（画像照合 ＋ ポチポチ確定）")
-    st.caption("AIが選手名やイニングごとの打席結果（1回〜7回）を下書きします。原本画像を見ながらプルダウンをポチポチ選んで確定できます。")
+    st.subheader("手書きスコア入力盤面（画像ズーム照合 ＋ ポチポチ確定）")
+    st.caption("AIが選手名、イニング打席、打点、盗塁を下書きします。画像を拡大・スクロールして細部を確認しながら確定できます。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -227,17 +236,17 @@ with tab_admin:
     uploaded_file = st.file_uploader("スコアブック写真を選択", type=["jpg", "jpeg", "png"])
 
     if uploaded_file:
-        img = Image.open(uploaded_file)
+        raw_bytes = uploaded_file.getvalue()
+        b64_img = base64.b64encode(raw_bytes).decode()
 
         if st.button("AIで下書きを作成する", type="primary"):
             with st.spinner("スコアブックを詳細ルールに基づいて解析中..."):
-                img_bytes = uploaded_file.getvalue()
                 try:
                     res = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                            "このスコアブックの出場選手全員とイニング別打席詳細を正確に抽出してください。"
+                            types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
+                            "このスコアブックの出場選手全員、イニング別打席詳細、打点、盗塁を正確に抽出してください。"
                         ],
                         config=types.GenerateContentConfig(
                             system_instruction=SYSTEM_PROMPT,
@@ -254,7 +263,7 @@ with tab_admin:
         # 照合・付箋（タブ）形式編集エリア
         if st.session_state.matches_data:
             st.divider()
-            
+
             # 手動で選手を追加するボタン
             add_col1, add_col2 = st.columns([1, 4])
             with add_col1:
@@ -264,28 +273,39 @@ with tab_admin:
                         "uniform_number": "",
                         "player_name": f"追加選手{len(st.session_state.matches_data) + 1}",
                         "is_substitute": True,
+                        "rbi": 0,
+                        "stolen_bases": 0,
                         "innings": {"1": "なし", "2": "なし", "3": "なし", "4": "なし", "5": "なし", "6": "なし", "7": "なし"},
                         "highlight": ""
                     }
                     st.session_state.matches_data.append(new_player_template)
                     st.rerun()
 
-            col_img, col_grid = st.columns([1, 1.4])
+            col_img, col_grid = st.columns([1.1, 1.3])
 
+            # 左側：ズーム＆スクロール可能な画像ビューワー
             with col_img:
-                st.markdown("#### 📷 スコアブック原本")
-                st.image(img, use_container_width=True)
+                st.markdown("#### 📷 スコアブック原本（ズーム機能付き）")
+                zoom_val = st.slider("🔍 画像拡大率", min_value=100, max_value=350, value=150, step=25, format="%d%%")
+                
+                # HTML+CSSによる拡大スクロールコンテナ
+                viewer_html = f"""
+                <div style="width:100%; height:620px; overflow:auto; border:2px solid #ccc; border-radius:8px; background-color:#222; text-align:center;">
+                    <img src="data:image/jpeg;base64,{b64_img}" style="width:{zoom_val}%; max-width:none; transition:width 0.15s ease-in-out; cursor:grab;" />
+                </div>
+                """
+                components.html(viewer_html, height=640)
 
+            # 右側：付箋タブによる編集盤面
             with col_grid:
                 st.markdown("#### 🎯 打席盤面エディタ（背番号・名前で選択）")
-                st.caption("付箋タブをクリックすると、その選手の打席結果（1回〜7回）が表示されます。")
+                st.caption("付箋タブをクリックすると、その選手の打席結果（1回〜7回）、打点、盗塁が表示されます。")
 
-                # 付箋タブの見出しを「背番号 選手名」にする
                 tab_labels = []
                 for idx, player in enumerate(st.session_state.matches_data):
-                    u_num = player.get("uniform_number", "").strip()
+                    u_num = str(player.get("uniform_number", "")).strip()
                     num_str = f"#{u_num} " if u_num else ""
-                    p_name = player.get("player_name", "選手").strip()
+                    p_name = str(player.get("player_name", "選手")).strip()
                     sub_tag = "(代)" if player.get("is_substitute") else ""
                     tab_labels.append(f"{num_str}{p_name}{sub_tag}")
 
@@ -300,9 +320,14 @@ with tab_admin:
                         st.markdown(f"##### **選手情報設定 {'（途中交代・代打）' if is_sub else '（先発）'}**")
 
                         p_cols = st.columns([1, 2, 3])
-                        u_num = p_cols[0].text_input("背番号", value=player.get("uniform_number", ""), key=f"num_{idx}")
-                        p_name = p_cols[1].text_input("選手名（漢字）", value=player.get("player_name", ""), key=f"name_{idx}")
-                        hl = p_cols[2].text_input("ハイライトメモ", value=player.get("highlight", ""), key=f"hl_{idx}")
+                        u_num = p_cols[0].text_input("背番号", value=str(player.get("uniform_number", "")), key=f"num_{idx}")
+                        p_name = p_cols[1].text_input("選手名（漢字）", value=str(player.get("player_name", "")), key=f"name_{idx}")
+                        hl = p_cols[2].text_input("ハイライトメモ", value=str(player.get("highlight", "")), key=f"hl_{idx}")
+
+                        # 打点と盗塁の修正枠
+                        stat_c1, stat_c2 = st.columns(2)
+                        rbi_val = stat_c1.number_input("打点 (RBI)", min_value=0, max_value=20, value=int(player.get("rbi", 0)), step=1, key=f"rbi_{idx}")
+                        sb_val = stat_c2.number_input("盗塁数 (SB)", min_value=0, max_value=20, value=int(player.get("stolen_bases", 0)), step=1, key=f"sb_{idx}")
 
                         st.markdown("**各イニングの打撃結果（1回〜7回）**")
                         inn_cols = st.columns(7)
@@ -323,6 +348,8 @@ with tab_admin:
                             "uniform_number": u_num,
                             "player_name": p_name,
                             "is_substitute": is_sub,
+                            "rbi": rbi_val,
+                            "stolen_bases": sb_val,
                             "innings": new_innings,
                             "highlight": hl
                         })
@@ -339,7 +366,7 @@ with tab_admin:
                 st.divider()
                 excel_data = create_excel_from_compiled(st.session_state["compiled_records"])
                 st.download_button(
-                    label="📥 選手名別シート付きExcelをダウンロード（背番号違いを統合）",
+                    label="📥 選手名別シート付きExcelをダウンロード（打点・盗塁反映）",
                     data=excel_data,
                     file_name="卒団生_打撃成績一覧.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -347,7 +374,7 @@ with tab_admin:
                 )
 
 # ==========================================
-# ② 選手名鑑＆アワード（選手名で名寄せ統合）
+# ② 選手名鑑＆アワード（打点・盗塁も完全連動）
 # ==========================================
 with tab_kids:
     compiled_data = st.session_state.get("compiled_records")
@@ -355,32 +382,38 @@ with tab_kids:
         st.info("👈 まず「役員用」タブでスコアを確定させてください。")
     else:
         df = pd.DataFrame(compiled_data)
-        # 背番号ではなく「選手名」でユニークリストを作成
         players = [p for p in df["player_name"].dropna().unique().tolist() if p.strip() != ""]
 
         st.subheader("🎖️ チームタイトル・アワード")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
 
-        hit_leaders = df.groupby("player_name")["hits"].sum().sort_values(ascending=False)
-        if not hit_leaders.empty and hit_leaders.iloc[0] > 0:
-            c1.metric("チーム最多単打", f"{hit_leaders.index[0]} 選手", f"{int(hit_leaders.iloc[0])} 本")
-
+        # 最多安打
         total_h = df["hits"] + df["doubles"] + df["triples"] + df["homeruns"]
         df["total_hits"] = total_h
         tb_leaders = df.groupby("player_name")["total_hits"].sum().sort_values(ascending=False)
         if not tb_leaders.empty and tb_leaders.iloc[0] > 0:
-            c2.metric("最多安打（長打含む）", f"{tb_leaders.index[0]} 選手", f"{int(tb_leaders.iloc[0])} 本")
+            c1.metric("最多安打（長打含む）", f"{tb_leaders.index[0]} 選手", f"{int(tb_leaders.iloc[0])} 本")
 
+        # スラッガー賞（本塁打）
         hr_leaders = df.groupby("player_name")["homeruns"].sum().sort_values(ascending=False)
         if not hr_leaders.empty and hr_leaders.iloc[0] > 0:
-            c3.metric("スラッガー賞（本塁打）", f"{hr_leaders.index[0]} 選手", f"{int(hr_leaders.iloc[0])} 本")
+            c2.metric("スラッガー賞（本塁打）", f"{hr_leaders.index[0]} 選手", f"{int(hr_leaders.iloc[0])} 本")
+
+        # 打点王
+        rbi_leaders = df.groupby("player_name")["rbi"].sum().sort_values(ascending=False)
+        if not rbi_leaders.empty and rbi_leaders.iloc[0] > 0:
+            c3.metric("クラッチヒッター賞（打点）", f"{rbi_leaders.index[0]} 選手", f"{int(rbi_leaders.iloc[0])} 打点")
+
+        # 盗塁王
+        sb_leaders = df.groupby("player_name")["stolen_bases"].sum().sort_values(ascending=False)
+        if not sb_leaders.empty and sb_leaders.iloc[0] > 0:
+            c4.metric("スピードスター賞（盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
         st.divider()
         st.subheader("⚾️ 卒団記念 デジタル選手名鑑")
         selected_player = st.selectbox("選手を選択してください（名前で集計）", players)
         player_data = df[df["player_name"] == selected_player]
 
-        # 複数試合・ユニフォーム違いの背番号をまとめて表示（例: #10, #1）
         used_numbers = [str(n).strip() for n in player_data["uniform_number"].dropna().unique() if str(n).strip() != ""]
         num_display = f"（背番号: {', '.join(used_numbers)}）" if used_numbers else ""
 
@@ -388,12 +421,16 @@ with tab_kids:
         h = player_data["total_hits"].sum()
         avg = (h / ab) if ab > 0 else 0.0
         hr = player_data["homeruns"].sum()
+        rbi = player_data["rbi"].sum()
+        sb = player_data["stolen_bases"].sum()
 
         st.markdown(f"### **{selected_player}** 選手の確定通算成績 {num_display}")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("打率", f".{int(avg * 1000):03d}" if avg > 0 else ".000")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("通算打率", f".{int(avg * 1000):03d}" if avg > 0 else ".000")
         col2.metric("通算安打", f"{int(h)} 本")
         col3.metric("本塁打", f"{int(hr)} 本")
+        col4.metric("通算打点", f"{int(rbi)} 点")
+        col5.metric("通算盗塁", f"{int(sb)} 個")
 
         st.markdown("#### 🔥 ベストハイライト")
         hl_list = player_data[player_data["highlight"].str.strip() != ""]["highlight"].tolist()
