@@ -253,7 +253,7 @@ with tab_admin:
 
                 try:
                     res = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model="gemini-1.5-flash",
                         contents=[
                             types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
                             "このスコアブックの試合日、相手チーム名、全出場選手の背番号・名前・各打席の文字起こしを行ってください。",
