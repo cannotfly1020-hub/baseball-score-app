@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
@@ -21,7 +21,6 @@ st.set_page_config(
 # ==========================================
 st.markdown("""
 <style>
-/* スマホ・PC共通：付箋タブを折り返さず、指先でスワイプできるチップ形式に */
 .stTabs [data-baseweb="tab-list"] {
     gap: 8px;
     overflow-x: auto !important;
@@ -35,8 +34,6 @@ st.markdown("""
     background-color: rgba(120, 120, 120, 0.12);
     font-size: 0.9rem;
 }
-
-/* スマホ用スティッキー画像表示 */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
@@ -56,10 +53,8 @@ if "all_matches_data" not in st.session_state:
     st.session_state.all_matches_data = {}
 if "match_images_b64" not in st.session_state:
     st.session_state.match_images_b64 = {}
-if "selected_player_idx" not in st.session_state:
-    st.session_state.selected_player_idx = 0
 
-# APIキー設定（Secretsまたはサイドバー）
+# APIキー設定
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("管理者APIキー (Gemini)", type="password")
@@ -67,16 +62,52 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 # ==========================================
-# 妥協なし・打点＆盗塁対応 精度研磨プロンプト
+# 画像前処理：赤色インク強調画像の生成
 # ==========================================
-SYSTEM_PROMPT = """
-あなたは学童野球の手書きスコアブック（早稲田式）の解析専門AIです。
-画像から出場選手全員（先発・交代選手・代打を漏れなく）の「イニング別打撃結果」「打点」「盗塁数」および個人成績を下書きデータとして正確に抽出し、指定のJSON配列のみを出力してください。
+def enhance_red_pen(pil_img):
+    """早稲田式の赤ペン結線（安打）を浮き彫りにする前処理画像を作成"""
+    rgb_img = pil_img.convert("RGB")
+    enhancer = ImageEnhance.Contrast(rgb_img)
+    contrast_img = enhancer.enhance(1.4)
+    
+    # 赤色成分の強調
+    r, g, b = contrast_img.split()
+    # 赤が優位なピクセルを強調
+    enhanced_r = ImageEnhance.Brightness(r).enhance(1.2)
+    merged = Image.merge("RGB", (enhanced_r, g, b))
+    
+    buf = io.BytesIO()
+    merged.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
 
-【選手名・背番号の網羅（最重要・漏れ厳禁）】
-1. 打順欄が上下二段書きになっている場合、上段の「先発選手」だけでなく、下段に書かれた「交代選手・代打選手」も絶対に漏らさず別の選手オブジェクトとして抽出してください。
-2. 背番号（数字）と選手名（漢字・ひらがな）を正確に読み取ってください。
-3. 代打メモ（赤ペンでPH、代打など）がある打席から、下段の交代選手へ打席を切り替えてください。交代前の打席は先発選手に割り当ててください。
+# ==========================================
+# 妥協なし・打点＆盗塁対応 精度研磨プロンプト群
+# ==========================================
+# Step 1: 選手名・背番号・交代枠確定用プロンプト
+ROSTER_PROMPT = """
+あなたは学童野球の手書きスコアブック（早稲田式）の選手一覧抽出AIです。
+スコアブックの左側（打順・背番号・選手名・守備位置）を精査し、出場選手名簿を抽出してください。
+
+【厳格ルール】
+1. 打順欄が上下二段書きの場合、上段の「先発選手」、下段の「交代・代打選手」の両方を漏れなく抽出してください。
+2. 代打メモ（赤ペンでPH、代打など）がある打席から下段の選手が有効になります。
+3. 枠外のメモや投球数、審判名を選手名と混同しないでください。
+
+【出力フォーマット（JSON配列のみ）】
+[
+  {
+    "batting_order": 打順番号(1〜9),
+    "uniform_number": "背番号（不明なら空文字）",
+    "player_name": "選手名（漢字）",
+    "is_substitute": 交代・代打選手なら true / 先発なら false
+  }
+]
+"""
+
+# Step 2: 打席・イニング・打点・盗塁判定用プロンプト
+DETAILS_PROMPT = """
+あなたは学童野球の手書きスコアブック（早稲田式）の打撃結果判定AIです。
+提供された選手リストに基づき、スコア画像（通常版および赤線強調版）から各選手のイニング別打撃結果、打点、盗塁を正確に判定してください。
 
 【読み取り対象領域とイニング対応の厳格ルール】
 1. スコアシート最上部の大きな数字（1, 2, 3, 4, 5, 6, 7, 8, 9）は「イニング列（回）」です。打席結果や打点、背番号などと絶対に混同しないでください。
@@ -113,19 +144,15 @@ SYSTEM_PROMPT = """
 - 丸囲みの数字（①, ②, ③）: そのイニングのアウトカウント
 - 「wp」: 暴投、「pb」: 捕逸、「S」: 盗塁
 
-【確信度と判定基準】
-- 標準的な記号や赤線の規則に合致している場合は確定値として処理してください。
-- インク潰れや重なり等でどうしても判別できない箇所がある場合のみ、ハイライトやメモに記載してください。
-
 【出力フォーマット（JSON配列のみ返却）】
 [
   {
     "match_date": "スコア記載の試合日（不明なら UNREADABLE）",
     "opponent": "対戦相手チーム名（不明なら UNREADABLE）",
     "batting_order": 打順番号(1〜9),
-    "uniform_number": "背番号（不明なら空文字）",
+    "uniform_number": "背番号",
     "player_name": "選手名",
-    "is_substitute": 交代選手なら true / 先発なら false,
+    "is_substitute": false,
     "rbi": 打点数(数値),
     "stolen_bases": 盗塁数(数値),
     "innings": {
@@ -137,7 +164,7 @@ SYSTEM_PROMPT = """
       "6": "なし",
       "7": "なし"
     },
-    "highlight": "その試合の印象的なプレー（例: 4回裏の豪快なランニング本塁打、代打での気迫の出塁など）"
+    "highlight": "その試合の印象的なプレー"
   }
 ]
 """
@@ -145,7 +172,6 @@ SYSTEM_PROMPT = """
 RESULT_OPTIONS = ["なし", "単打", "2塁打", "3塁打", "本塁打", "四球", "死球", "三振", "凡打", "犠打"]
 
 def calculate_stats_from_grid(grid_players, match_file_name=""):
-    """ポチポチ盤面で確定されたイニング結果から個人成績を集計する"""
     compiled_records = []
     for p in grid_players:
         ab = 0
@@ -210,9 +236,7 @@ def calculate_stats_from_grid(grid_players, match_file_name=""):
         })
     return compiled_records
 
-
 def create_excel_from_compiled(all_records):
-    """選手名（名前）のみをキーにしてシートを生成（複数試合・背番号違いを1シートに統合）"""
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
@@ -260,18 +284,17 @@ def create_excel_from_compiled(all_records):
     wb.save(output)
     return output.getvalue()
 
-
 # タブ構成
 tab_admin, tab_kids = st.tabs(
     ["📝 役員用（複数試合一括解析＆ポチポチ確定）", "🏆 選手名鑑＆アワード"]
 )
 
 # ==========================================
-# ① 役員用（スマホ＆PC両立 照合エディタ）
+# ① 役員用（2段階解析 ＆ 照合エディタ）
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア解析 ＆ 照合エディタ")
-    st.caption("PCでは見開き2画面、スマホでは指先スワイプと画像固定表示でサクサク照合できます。")
+    st.subheader("手書きスコア解析 ＆ 照合エディタ（2段階高精度エンジン）")
+    st.caption("赤線強調フィルタと2段階解析（選手枠確定 ➜ 打席詳細）により、名前漏れ・安打誤認・列ズレを徹底防止します。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -284,7 +307,7 @@ with tab_admin:
     )
 
     if uploaded_files:
-        if st.button(f"AIで全{len(uploaded_files)}試合の下書きを一括作成する", type="primary"):
+        if st.button(f"AIで全{len(uploaded_files)}試合を高精度一括解析する", type="primary"):
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -292,27 +315,51 @@ with tab_admin:
             new_images_b64 = {}
 
             for idx, f in enumerate(uploaded_files):
-                status_text.text(f"解析中 ({idx+1}/{len(uploaded_files)}): {f.name}...")
+                f_name = f.name
+                status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の赤ペン強調＆選手枠抽出中...")
                 raw_bytes = f.read()
-                new_images_b64[f.name] = base64.b64encode(raw_bytes).decode()
+                new_images_b64[f_name] = base64.b64encode(raw_bytes).decode()
+                
+                # 画像の赤ペン強調処理
+                pil_img = Image.open(io.BytesIO(raw_bytes))
+                enhanced_red_bytes = enhance_red_pen(pil_img)
 
                 try:
-                    res = client.models.generate_content(
+                    # Step 1: 選手名簿の確定
+                    res_roster = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
-                            "このスコアブックの出場選手全員、イニング別打席詳細、打点、盗塁を正確に抽出してください。"
+                            "スコアブック左側の打順・背番号・選手名（先発・交代・代打二段書き含む）を漏れなく抽出してください。"
                         ],
                         config=types.GenerateContentConfig(
-                            system_instruction=SYSTEM_PROMPT,
+                            system_instruction=ROSTER_PROMPT,
                             response_mime_type="application/json",
                             temperature=0.1
                         )
                     )
-                    parsed = json.loads(res.text)
-                    new_all_matches[f.name] = parsed
+                    roster_data = res_roster.text
+
+                    # Step 2: 選手枠に基づき打席マス目・打点・盗塁を判定
+                    status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} のイニング打席・安打結線を判定中...")
+                    res_details = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=[
+                            types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=enhanced_red_bytes, mime_type="image/jpeg"),
+                            f"確定選手名簿:\n{roster_data}\n\n上記選手枠に基づき、スコアブックのイニング別打席詳細、打点、盗塁を正確に判定してください。"
+                        ],
+                        config=types.GenerateContentConfig(
+                            system_instruction=DETAILS_PROMPT,
+                            response_mime_type="application/json",
+                            temperature=0.1
+                        )
+                    )
+                    parsed = json.loads(res_details.text)
+                    new_all_matches[f_name] = parsed
+
                 except Exception as e:
-                    st.error(f"{f.name} の解析エラー: {e}")
+                    st.error(f"{f_name} の解析エラー: {e}")
 
                 progress_bar.progress((idx + 1) / len(uploaded_files))
 
@@ -320,7 +367,7 @@ with tab_admin:
             if new_all_matches:
                 st.session_state.all_matches_data = new_all_matches
                 st.session_state.match_images_b64 = new_images_b64
-                st.success(f"🎉 全 {len(new_all_matches)} 試合分の下書きが完了しました！")
+                st.success(f"🎉 全 {len(new_all_matches)} 試合分の解析が完了しました！")
 
     # 照合・編集盤面
     if st.session_state.all_matches_data:
@@ -328,19 +375,15 @@ with tab_admin:
         match_files = list(st.session_state.all_matches_data.keys())
         
         top_c1, top_c2 = st.columns([2, 1])
-        selected_match_file = top_c1.selectbox(
-            "📁 確認・編集する試合を選択",
-            match_files
-        )
-        is_mobile_sticky = top_c2.checkbox("📱 スマホ表示（画像を上部に固定）", value=False, help="スマホでスクロールしても画像が上に残り続けます")
+        selected_match_file = top_c1.selectbox("📁 確認・編集する試合を選択", match_files)
+        is_mobile_sticky = top_c2.checkbox("📱 スマホ表示（画像を上部に固定）", value=False)
 
         current_players = st.session_state.all_matches_data.get(selected_match_file, [])
         current_b64 = st.session_state.match_images_b64.get(selected_match_file, "")
 
-        # 選手追加ボタン
         add_col1, add_col2 = st.columns([1, 3])
         with add_col1:
-            if st.button("➕ この試合に選手を手動追加", help="AIが見落とした選手枠を新しく追加します"):
+            if st.button("➕ この試合に選手を手動追加"):
                 new_player_template = {
                     "batting_order": len(current_players) + 1,
                     "uniform_number": "",
@@ -356,7 +399,7 @@ with tab_admin:
 
         col_img, col_grid = st.columns([1.1, 1.3])
 
-        # 画像表示（スマホ固定モード対応）
+        # 左側：画像ビューワー
         with col_img:
             st.markdown(f"#### 📷 原本画像: `{selected_match_file}`")
             zoom_val = st.slider("🔍 拡大率", min_value=100, max_value=350, value=150, step=25, format="%d%%")
@@ -371,7 +414,7 @@ with tab_admin:
             """
             components.html(viewer_html, height=box_height + 20)
 
-        # 付箋タブ編集盤面
+        # 右側：付箋タブエディタ
         with col_grid:
             st.markdown("#### 🎯 打席盤面エディタ")
             st.caption("タブを指で横にスワイプして選手を選択できます。")
@@ -440,9 +483,8 @@ with tab_admin:
                     all_compiled.extend(compiled_single)
 
                 st.session_state["compiled_records"] = all_compiled
-                st.success(f"🎉 全 {len(st.session_state.all_matches_data)} 試合分の成績を確定統合しました！下のボタンからダウンロードできます。")
+                st.success(f"🎉 全 {len(st.session_state.all_matches_data)} 試合分の成績を確定統合しました！")
 
-        # 確定後のExcelダウンロードボタン
         if "compiled_records" in st.session_state:
             st.divider()
             excel_data = create_excel_from_compiled(st.session_state["compiled_records"])
