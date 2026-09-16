@@ -11,18 +11,53 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
-    page_title="学童野球スコア集計",
+    page_title="学童野球スコア集計＆卒団アルバム",
     page_icon="⚾️",
     layout="wide",
 )
 
+# ==========================================
+# スマホ＆PC両立用レスポンシブCSSスタイル
+# ==========================================
+st.markdown("""
+<style>
+/* スマホ・PC共通：付箋タブを折り返さず、指先でスワイプできるチップ形式に */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 8px;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
+}
+.stTabs [data-baseweb="tab"] {
+    padding: 6px 14px;
+    border-radius: 16px;
+    background-color: rgba(120, 120, 120, 0.12);
+    font-size: 0.9rem;
+}
+
+/* スマホ用スティッキー画像表示 */
+.sticky-mobile-viewer {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 3.5rem;
+    z-index: 99;
+    background-color: rgba(25, 25, 25, 0.95);
+    padding: 8px;
+    border-radius: 10px;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+    margin-bottom: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # セッション状態の初期化
 if "all_matches_data" not in st.session_state:
-    # 複数試合を辞書形式で管理: { "ファイル名": [選手データリスト], ... }
     st.session_state.all_matches_data = {}
 if "match_images_b64" not in st.session_state:
-    # 各試合のBase64画像辞書: { "ファイル名": base64文字列, ... }
     st.session_state.match_images_b64 = {}
+if "selected_player_idx" not in st.session_state:
+    st.session_state.selected_player_idx = 0
 
 # APIキー設定（Secretsまたはサイドバー）
 api_key = st.secrets.get("GEMINI_API_KEY")
@@ -32,7 +67,7 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 # ==========================================
-# 妥協なし・打点＆盗塁対応 精度研磨プロンプト
+# 妥協なし・打点＆盗塁対応 精度研磨プロンプト（完全維持）
 # ==========================================
 SYSTEM_PROMPT = """
 あなたは学童野球の手書きスコアブック（早稲田式）の解析専門AIです。
@@ -62,7 +97,7 @@ SYSTEM_PROMPT = """
 1. 打点 (rbi):
    - 安打（赤線）や適時打の際、マス目周辺や打点欄に記された数字、あるいは得点が入ったことが明確なタイムリー打席から試合全体の合計打点を計算してください（不明・なしなら0）。
 2. 盗塁 (stolen_bases):
-   - マス目内のダイヤモンド進塁線周辺に「S」「〄」などの盗塁記号がある場合、その個数をカウントして合計盗塁数としてください（不明・なしなら0）。
+   - マス目内のダイヤモンド進塁線周辺に「S」「ㄭ」などの盗塁記号がある場合、その個数をカウントして合計盗塁数としてください（不明・なしなら0）。
 
 【括弧書き数字「(数字)」の解釈】
 - マス目内に書かれている「(6)」「(8)」「(9)」などの括弧付き数字は、「その打順の選手の打撃や進塁打によって次の塁へ進んだこと」を示す進塁責任打者の記録です。
@@ -232,11 +267,11 @@ tab_admin, tab_kids = st.tabs(
 )
 
 # ==========================================
-# ① 役員用（複数試合一括アップロード ＋ 切り替え照合エディタ）
+# ① 役員用（スマホ＆PC両立 照合エディタ）
 # ==========================================
 with tab_admin:
-    st.subheader("複数手書きスコア一括解析 ＆ 照合エディタ")
-    st.caption("何試合分でもまとめてアップロード可能です。1試合ずつ個別に最高精度でAI下書きを行い、画面上で切り替えて微修正できます。")
+    st.subheader("手書きスコア解析 ＆ 照合エディタ")
+    st.caption("PCでは見開き2画面、スマホでは指先スワイプと画像固定表示でサクサク照合できます。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -285,27 +320,28 @@ with tab_admin:
             if new_all_matches:
                 st.session_state.all_matches_data = new_all_matches
                 st.session_state.match_images_b64 = new_images_b64
-                st.success(f"🎉 全 {len(new_all_matches)} 試合分の下書きが完了しました！下のセレクターで試合を切り替えて確認・確定してください。")
+                st.success(f"🎉 全 {len(new_all_matches)} 試合分の下書きが完了しました！")
 
-    # 複数試合の照合・編集盤面
+    # 照合・編集盤面
     if st.session_state.all_matches_data:
         st.divider()
         match_files = list(st.session_state.all_matches_data.keys())
         
-        # 試合選択切り替えボックス
-        sel_c1, sel_c2 = st.columns([2, 1])
-        selected_match_file = sel_c1.selectbox(
-            "📁 確認・編集する試合（スコア写真）を選択してください",
+        # 試合選択切り替え＆表示設定
+        top_c1, top_c2 = st.columns([2, 1])
+        selected_match_file = top_c1.selectbox(
+            "📁 確認・編集する試合を選択",
             match_files
         )
+        is_mobile_sticky = top_c2.checkbox("📱 スマホ表示（画像を上部に固定）", value=False, help="スマホでスクロールしても画像が上に残り続けます")
 
         current_players = st.session_state.all_matches_data.get(selected_match_file, [])
         current_b64 = st.session_state.match_images_b64.get(selected_match_file, "")
 
-        # 手動で選手を追加するボタン（選択中の試合に対して）
-        add_col1, add_col2 = st.columns([1, 4])
+        # 選手追加ボタン
+        add_col1, add_col2 = st.columns([1, 3])
         with add_col1:
-            if st.button("➕ この試合に選手を手動追加", help="AIが見落とした交代選手や代打選手枠を新しく追加します"):
+            if st.button("➕ この試合に選手を手動追加", help="AIが見落とした選手枠を新しく追加します"):
                 new_player_template = {
                     "batting_order": len(current_players) + 1,
                     "uniform_number": "",
@@ -319,24 +355,29 @@ with tab_admin:
                 st.session_state.all_matches_data[selected_match_file].append(new_player_template)
                 st.rerun()
 
+        # レイアウト分割
         col_img, col_grid = st.columns([1.1, 1.3])
 
-        # 左側：選択中試合の原本画像（ズーム機能付き）
+        # 画像表示（スマホ固定モード対応）
         with col_img:
             st.markdown(f"#### 📷 原本画像: `{selected_match_file}`")
-            zoom_val = st.slider("🔍 画像拡大率", min_value=100, max_value=350, value=150, step=25, format="%d%%")
+            zoom_val = st.slider("🔍 拡大率", min_value=100, max_value=350, value=150, step=25, format="%d%%")
             
+            # スマホ固定モード時は高さを抑えてスクロール追従
+            box_height = 320 if is_mobile_sticky else 620
+            sticky_class = "sticky-mobile-viewer" if is_mobile_sticky else ""
+
             viewer_html = f"""
-            <div style="width:100%; height:620px; overflow:auto; border:2px solid #ccc; border-radius:8px; background-color:#222; text-align:center;">
+            <div class="{sticky_class}" style="width:100%; height:{box_height}px; overflow:auto; border:2px solid #555; border-radius:8px; background-color:#222; text-align:center;">
                 <img src="data:image/jpeg;base64,{current_b64}" style="width:{zoom_val}%; max-width:none; transition:width 0.15s ease-in-out; cursor:grab;" />
             </div>
             """
-            components.html(viewer_html, height=640)
+            components.html(viewer_html, height=box_height + 20)
 
-        # 右側：選択中試合の付箋タブ編集盤面
+        # 付箋タブ編集盤面
         with col_grid:
-            st.markdown("#### 🎯 打席盤面エディタ（背番号・名前で選択）")
-            st.caption("付箋タブをクリックして、各イニング（1回〜7回）、打点、盗塁を修正できます。")
+            st.markdown("#### 🎯 打席盤面エディタ")
+            st.caption("タブを指で横にスワイプして選手を選択できます。")
 
             tab_labels = []
             for idx, player in enumerate(current_players):
@@ -392,19 +433,17 @@ with tab_admin:
                         "highlight": hl
                     })
 
-            # 現在の試合の編集内容をセッションに反映
             st.session_state.all_matches_data[selected_match_file] = edited_current_players
 
             st.write("")
             if st.button("💾 全試合の成績を統合確定・Excelを作成する", type="primary", use_container_width=True):
-                # 全試合のデータを一括で個人成績に変換・統合
                 all_compiled = []
                 for m_file, p_list in st.session_state.all_matches_data.items():
                     compiled_single = calculate_stats_from_grid(p_list, match_file_name=m_file)
                     all_compiled.extend(compiled_single)
 
                 st.session_state["compiled_records"] = all_compiled
-                st.success(f"🎉 アップロードされた全 {len(st.session_state.all_matches_data)} 試合分の成績を確定統合しました！下のボタンからダウンロードできます。")
+                st.success(f"🎉 全 {len(st.session_state.all_matches_data)} 試合分の成績を確定統合しました！下のボタンからダウンロードできます。")
 
         # 確定後のExcelダウンロードボタン
         if "compiled_records" in st.session_state:
@@ -413,13 +452,13 @@ with tab_admin:
             st.download_button(
                 label=f"📥 全{len(st.session_state.all_matches_data)}試合分 選手名別シート付きExcelをダウンロード",
                 data=excel_data,
-                file_name="通算打撃成績一覧.xlsx",
+                file_name="卒団生_通算打撃成績一覧.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
 
 # ==========================================
-# ② 選手名鑑＆アワード（全試合分を通算合算）
+# ② 選手名鑑＆アワード（全試合通算）
 # ==========================================
 with tab_kids:
     compiled_data = st.session_state.get("compiled_records")
@@ -432,34 +471,29 @@ with tab_kids:
         st.subheader("🎖️ チームタイトル・アワード（通算集計）")
         c1, c2, c3, c4 = st.columns(4)
 
-        # 最多安打
         total_h = df["hits"] + df["doubles"] + df["triples"] + df["homeruns"]
         df["total_hits"] = total_h
         tb_leaders = df.groupby("player_name")["total_hits"].sum().sort_values(ascending=False)
         if not tb_leaders.empty and tb_leaders.iloc[0] > 0:
             c1.metric("最多安打（長打含む）", f"{tb_leaders.index[0]} 選手", f"{int(tb_leaders.iloc[0])} 本")
 
-        # スラッガー賞（本塁打）
         hr_leaders = df.groupby("player_name")["homeruns"].sum().sort_values(ascending=False)
         if not hr_leaders.empty and hr_leaders.iloc[0] > 0:
             c2.metric("スラッガー賞（本塁打）", f"{hr_leaders.index[0]} 選手", f"{int(hr_leaders.iloc[0])} 本")
 
-        # 打点王
         rbi_leaders = df.groupby("player_name")["rbi"].sum().sort_values(ascending=False)
         if not rbi_leaders.empty and rbi_leaders.iloc[0] > 0:
             c3.metric("クラッチヒッター賞（打点）", f"{rbi_leaders.index[0]} 選手", f"{int(rbi_leaders.iloc[0])} 打点")
 
-        # 盗塁王
         sb_leaders = df.groupby("player_name")["stolen_bases"].sum().sort_values(ascending=False)
         if not sb_leaders.empty and sb_leaders.iloc[0] > 0:
             c4.metric("スピードスター賞（盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
         st.divider()
-        st.subheader("⚾️ デジタル選手名鑑（全試合通算）")
+        st.subheader("⚾️ 卒団記念 デジタル選手名鑑（全試合通算）")
         selected_player = st.selectbox("選手を選択してください（名前で通算集計）", players)
         player_data = df[df["player_name"] == selected_player]
 
-        # 複数試合で着用したすべての背番号を自動抽出して並べる
         used_numbers = [str(n).strip() for n in player_data["uniform_number"].dropna().unique() if str(n).strip() != ""]
         num_display = f"（着用背番号: #{', #'.join(used_numbers)}）" if used_numbers else ""
 
