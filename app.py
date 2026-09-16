@@ -8,7 +8,7 @@ import pandas as pd
 import streamlit as st
 
 st.set_page_config(
-    page_title="学童野球スコア集計＆卒団アルバム",
+    page_title="学童野球スコア集計",
     page_icon="⚾️",
     layout="wide",
 )
@@ -24,7 +24,7 @@ client = genai.Client(api_key=api_key) if api_key else None
 
 SYSTEM_PROMPT = """
 あなたは学童野球の手書きスコアブック（早稲田式）の厳密な記録検証員です。
-選手の大切な卒団記録となるため、推測・捏造・適当な補完は一切許されません。
+選手の大切な記録となるため、推測・捏造・適当な補完は一切許されません。
 判定に100%の確信が持てない箇所は、絶対にごまかさず正直に null とし、要確認フラグを立ててください。
 
 【選手名・背番号の厳格な分離（最重要）】
@@ -254,7 +254,7 @@ with tab_admin:
         st.download_button(
             label="📥 選手別シート付きExcelをダウンロード",
             data=excel_file,
-            file_name="卒団生_打撃成績一覧.xlsx",
+            file_name="打撃成績一覧.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -302,7 +302,7 @@ with tab_kids:
 
         st.divider()
 
-        st.subheader("⚾️ 卒団記念 デジタル選手名鑑")
+        st.subheader("⚾️ デジタル選手名鑑")
         selected_player = st.selectbox("選手を選択してください", players)
 
         player_data = df[df["display_name"] == selected_player]
