@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 st.set_page_config(
-    page_title="学童野球スコア集計＆卒団アルバム",
+    page_title="学童野球スコア集計",
     page_icon="⚾️",
     layout="wide",
 )
@@ -413,7 +413,7 @@ with tab_admin:
             st.download_button(
                 label=f"📥 全{len(st.session_state.all_matches_data)}試合分 選手名別シート付きExcelをダウンロード",
                 data=excel_data,
-                file_name="卒団生_通算打撃成績一覧.xlsx",
+                file_name="通算打撃成績一覧.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
@@ -455,7 +455,7 @@ with tab_kids:
             c4.metric("スピードスター賞（盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
         st.divider()
-        st.subheader("⚾️ 卒団記念 デジタル選手名鑑（全試合通算）")
+        st.subheader("⚾️ デジタル選手名鑑（全試合通算）")
         selected_player = st.selectbox("選手を選択してください（名前で通算集計）", players)
         player_data = df[df["player_name"] == selected_player]
 
