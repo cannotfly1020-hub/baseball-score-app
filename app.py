@@ -28,31 +28,32 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 
-def extract_red_highlights(image_bytes):
+def extract_red_highlights(image_bytes, min_saturation, min_value, dilation_iter):
     """
-    照明ムラや薄いボールペン・朱色・ピンクがかった赤線も漏らさず拾えるよう、
-    HSV色空間の範囲を大幅に拡大し、線を太く強調する
+    スライダーの設定値（彩度・明度・線の膨張）に合わせて
+    リアルタイムに赤線のみを抽出し、白背景でクッキリ可視化する
     """
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
-    # 赤〜朱色〜赤紫を広くカバーする2つの範囲
-    lower_red1 = np.array([0, 40, 40])
+    # 赤色のHSV範囲
+    lower_red1 = np.array([0, min_saturation, min_value])
     upper_red1 = np.array([15, 255, 255])
-    lower_red2 = np.array([150, 40, 40])
+    lower_red2 = np.array([155, min_saturation, min_value])
     upper_red2 = np.array([180, 255, 255])
 
     mask1 = cv2.inRange(hsv, lower_red1, upper_red1)
     mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
     mask = mask1 | mask2
 
-    # 細いボールペン線を2ピクセル膨張させてクッキリ可視化
-    kernel = np.ones((3, 3), np.uint8)
-    mask = cv2.dilate(mask, kernel, iterations=2)
+    # 線の太さを調整
+    if dilation_iter > 0:
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=dilation_iter)
 
-    # 元画像の赤線部分のみを抽出し、背景を白くしてコントラストを最大化
+    # 白背景に赤線だけを描画
     white_bg = np.full_like(img, 255)
     res = np.where(mask[:, :, np.newaxis] == 255, img, white_bg)
 
@@ -64,17 +65,17 @@ SYSTEM_PROMPT = """
 あなたは学童野球手書きスコア（早稲田式）の「赤ペン線・打席詳細の精密鑑定員」です。
 提供される画像は以下の2枚です：
 - 1枚目: 元のスコアブック画像（選手名や鉛筆文字を確認）
-- 2枚目: 赤ペンインクのみを太く浮き彫りにした画像（ダイヤモンドの赤線を確認）
+- 2枚目: ユーザーが手動調整して赤ペンインクのみを浮き彫りにした画像（ダイヤモンドの赤線を確認）
 
-あなたに「合計計算」や「安打の勝手な判断」は求めません。
+あなたに合計計算は求めません。
 各打席について【ダイヤモンドの赤線がどこまで伸びているか】および【鉛筆の文字】をありのまま回答してください。
 
 【赤線の到達位置の判定ルール（2枚目の強調画像で必ず確認すること）】
 各打席のダイヤモンド枠において、赤線がどこまで結線されているかを red_line_to に厳密に記録してください：
-- "NONE": 赤線なし（アウト、単なる凡打など）
-- "1B": 一塁（右下の辺）のみ赤線
-- "2B": 一塁から二塁（真上の頂点）まで連続して赤線が引かれている
-- "3B": 一塁〜二塁〜三塁（左端の頂点）まで連続して赤線が引かれている（例: 4番打者の打席）
+- "NONE": 赤線なし（凡打・アウトなど）
+- "1B": 一塁（右下の辺）のみ赤線（単打）
+- "2B": 一塁から二塁（真上の頂点）まで連続して赤線が引かれている（二塁打）
+- "3B": 一塁〜二塁〜三塁（左端の頂点）まで連続して赤線が引かれている（三塁打 ※例: 4回裏の4番打者）
 - "HOME": 四角形（ダイヤモンド）の四辺すべてが赤線で一周囲まれている（本塁生還・得点）
 
 ※注意：
@@ -105,9 +106,9 @@ SYSTEM_PROMPT = """
         "inning": イニング番号,
         "pencil_result": "鉛筆文字（例: B, K, 4-3, 3TO など）",
         "red_line_to": "NONE | 1B | 2B | 3B | HOME",
-        "is_walk": true/false（四球ならtrue）,
-        "is_dead_ball": true/false（死球ならtrue）,
-        "is_strikeout": true/false（三振ならtrue）,
+        "is_walk": true/false,
+        "is_dead_ball": true/false,
+        "is_strikeout": true/false,
         "stolen_bases": 0,
         "rbi": 0
       }
@@ -148,12 +149,10 @@ def summarize_player_records(raw_records):
             is_db = d.get("is_dead_ball", False) or (pencil in ["DB", "死"])
             is_k = d.get("is_strikeout", False) or ("K" in pencil)
 
-            # 得点（ホーム生還）判定: 赤線が一周していれば得点
             is_run = (red == "HOME")
             if is_run:
                 runs += 1
 
-            # 四死球・三振
             if is_w:
                 bb += 1
                 res_str = "四球"
@@ -161,7 +160,6 @@ def summarize_player_records(raw_records):
                 hbp += 1
                 res_str = "死球"
             else:
-                # 四死球以外は打数加算
                 ab += 1
                 if is_k:
                     so += 1
@@ -176,7 +174,6 @@ def summarize_player_records(raw_records):
                     hits += 1
                     res_str = "単打"
                 elif red == "HOME":
-                    # 一周で四死球でない場合は本塁打
                     hrs += 1
                     res_str = "本塁打"
                 else:
@@ -295,8 +292,7 @@ tab_admin, tab_kids = st.tabs(
 # ① 役員用画面
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア自動解析（赤線ハイパーブースト版）")
-    st.caption("赤インク検出範囲を広げ、太く強調した画像と照合して解析します。")
+    st.subheader("手書きスコア自動解析（手動赤線チューナー付き）")
 
     if not client:
         st.warning("Gemini APIキーを設定してください。")
@@ -309,30 +305,45 @@ with tab_admin:
     )
 
     if uploaded_files:
-        if st.button("AI自動解析を開始する", type="primary"):
+        st.markdown("#### 🎛️ 赤線抽出の微調整（チューニング）")
+        st.caption("スライダーを動かして、右側のプレビューで「赤線がクッキリ見える状態」に合わせてください。")
+
+        col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+        with col_ctrl1:
+            sat_val = st.slider("赤色の鮮やかさ感度 (彩度)", 10, 150, 40, 5, help="値を下げるほど、薄い赤ペンや影になった赤線も拾います")
+        with col_ctrl2:
+            bright_val = st.slider("明るさ感度 (明度)", 10, 150, 40, 5, help="値を下げるほど、暗い赤線も拾います")
+        with col_ctrl3:
+            thick_val = st.slider("線の太さ (膨張)", 0, 5, 2, 1, help="細いボールペン線を太く強調します")
+
+        # 1枚目のプレビューを表示
+        first_img_bytes = uploaded_files[0].read()
+        uploaded_files[0].seek(0)
+        preview_red = extract_red_highlights(first_img_bytes, sat_val, bright_val, thick_val)
+
+        with st.expander("👀 リアルタイム抽出プレビューを確認（クリックで展開）", expanded=True):
+            p_col1, p_col2 = st.columns(2)
+            p_col1.image(first_img_bytes, caption="元写真", use_container_width=True)
+            p_col2.image(preview_red, caption="AIに渡す赤線抽出画像（白背景）", use_container_width=True)
+
+        if st.button("この調整でAI解析を開始する", type="primary"):
             new_records = []
             progress = st.progress(0)
             status = st.empty()
 
             for i, f in enumerate(uploaded_files):
-                status.text(f"赤線強化中 ({i+1}/{len(uploaded_files)}): {f.name}...")
+                status.text(f"赤線照合中 ({i+1}/{len(uploaded_files)}): {f.name}...")
                 img_bytes = f.read()
 
-                # 赤ペン強調画像を生成
-                red_highlight_bytes = extract_red_highlights(img_bytes)
-
-                # 画面上でも「赤線がどう見えているか」を確認できるように表示
-                with st.expander(f"🔍 {f.name} の赤ペン抽出プレビュー（AIに送る強調画像）"):
-                    col_img1, col_img2 = st.columns(2)
-                    col_img1.image(img_bytes, caption="元画像", use_container_width=True)
-                    col_img2.image(red_highlight_bytes, caption="赤線抽出・強調画像", use_container_width=True)
+                # 設定したスライダー値で赤線画像を生成
+                red_bytes = extract_red_highlights(img_bytes, sat_val, bright_val, thick_val)
 
                 try:
                     res = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
-                            types.Part.from_bytes(data=red_highlight_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=red_bytes, mime_type="image/jpeg"),
                             "1枚目の元画像と、2枚目の赤ペン強調画像を照合し、各打席の赤線の到達位置(1B, 2B, 3B, HOME, NONE)と鉛筆文字を漏れなく抽出してください。",
                         ],
                         config=types.GenerateContentConfig(
@@ -353,7 +364,7 @@ with tab_admin:
             if new_records:
                 st.session_state.records = new_records
                 st.session_state.edited_df = pd.DataFrame(new_records)
-                st.success("🎉 赤線鑑定と成績計算が完了しました！")
+                st.success("🎉 赤線照合と成績計算が完了しました！")
 
     if st.session_state.records:
         st.markdown("### ✏️ 成績確認・手動修正テーブル")
