@@ -2,4 +2,6 @@ streamlit
 google-genai
 openpyxl
 pandas
-pillow
+opencv-python-headless
+numpy
+Pillow
