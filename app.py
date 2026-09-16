@@ -13,11 +13,9 @@ st.set_page_config(
     layout="wide",
 )
 
-# セッション状態の初期化
 if "records" not in st.session_state:
     st.session_state.records = []
 
-# APIキー設定（Secretsまたは管理者入力）
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
     api_key = st.sidebar.text_input("管理者APIキー (Gemini)", type="password")
@@ -29,52 +27,45 @@ SYSTEM_PROMPT = """
 選手の大切な卒団記録となるため、推測・捏造・適当な補完は一切許されません。
 判定に100%の確信が持てない箇所は、絶対にごまかさず正直に null とし、要確認フラグを立ててください。
 
-【最重要：選手交代（二段書き）の確実な分離処理】
-打順枠に選手名が二段（または複数）書かれている場合、絶対に1人の選手にまとめたり、認識を諦めてスキップしてはいけません。
-必ず「先発選手」と「途中出場（代打/交代）選手」を別々の独立したデータ（JSONオブジェクト）として出力してください。
+【選手名・背番号の厳格な分離（最重要）】
+打順枠に上下二段で記載がある場合、背番号が異なれば完全に別人の選手です。
+絶対に1人の選手にまとめたり、上下で同じ名前を流用したりしないでください。
+- 打順欄の左側に記載されている「背番号」と「漢字氏名」を正しく1対1で対応させて抽出してください。
+- 例: 9番枠の上段（背番号19）と下段（背番号21: 豊島選手）は別人です。背番号19の選手名を文字通り正確に読み取ってください。
+- 選手枠が二段書きの場合、必ず「上段選手（先発）」と「下段選手（交代・代打）」を別々の独立したJSONオブジェクトとして出力してください。
 
-1. 先発選手（上段）の処理:
-   - 試合開始から交代が起きるまでの打席（例: 1〜3回など）を確実に集計する。
-   - 交代した後の打席は含めない。
-2. 交代・代打選手（下段）の処理:
-   - マス目付近や打順欄に赤字で「代打」「PH」「L」とある打席、または4回等の交代イニング以降の打席のみを集計する。
-   - 交代前の打席は含めない（打席数に加算しない）。
-3. 前後の打席の保持:
-   - 交代の境界線が多少曖昧であっても、読めているイニングの打席結果（ヒット、四球、三振など）は絶対に捨てず、確信がある方の選手に計上すること。
+【選手交代と打席の割り当て】
+1. 上段選手（先発）: 交代前までの打席（例: 1〜3回など）を集計。
+2. 下段選手（交代/代打）: マス目付近や打順欄に赤字で「代打」「PH」「L」とある打席、または4回以降の打席を集計。
+3. 交代前後の打席を混同せず、それぞれの選手の記録として独立して計上してください。
 
 【安打および長打の判定ルール（赤ペン優先）】
-中央のひし形（ダイヤモンド）枠に引かれた「赤色の線」の本数・到達位置で安打種別を厳密に判定してください：
-- 右下の辺のみ赤線（一塁到達）: 単打（hits = 1）
-- 一塁から二塁（上頂点）まで連続した赤線: 二塁打（doubles = 1）
+中央のダイヤモンド枠に引かれた「赤色の線」の本数・到達位置で判定：
+- 右下辺のみ赤線（一塁到達）: 単打（hits = 1）
+- 一塁〜二塁（上頂点）まで連続した赤線: 二塁打（doubles = 1）
 - 一塁〜三塁（左頂点）まで連続した赤線: 三塁打（triples = 1）
 - 本塁まで四角を赤線で一周囲んでいる: 本塁打（homeruns = 1）
-※黒鉛筆の凡打記号があっても、赤ペンでダイヤモンドが結線されている場合は安打の記録を最優先してください。
-※「wp（暴投）」「盗塁」による進塁と、打者自身の安打打球による結線を区別してください。
+※黒鉛筆の記号があっても、赤ペンでダイヤモンドが結線されている場合は安打の記録を最優先。
 
 【括弧書き数字「(数字)」の除外】
-- マス目内の「(6)」「(8)」「(9)」等の括弧付き数字は、「その打順の選手の打撃・進塁打によって進塁した」ことを示す進塁責任打者の記録です。
-- 打者本人の打撃結果や守備位置コードではないため、混同せず進塁・打点の補助情報として扱ってください。
+- マス目内の「(6)」「(8)」「(9)」等は、その打順の選手の打撃によって進塁したことを示す「進塁責任打者」の記録です。打者本人の打撃結果ではないため進塁補助情報として扱ってください。
 
 【スコア記号の標準解釈】
-- 「K」「Ⓚ」: 三振（strikeouts）
-- 「四」「B」: 四球（walks）
-- 「DB」「死」: 死球（dead_ball）
+- 「K」「Ⓚ」: 三振（strikeouts = 1）
+- 「四」「B」: 四球（walks = 1）
+- 「DB」「死」: 死球（dead_ball = 1）
 - 「3A」「1A」「4-3」等: 凡打（打数=1, 安打=0）
 - 丸囲みの数字（①, ②, ③）: そのイニングのアウトカウント
 
-【確信度の扱い（ごまかし禁止）】
-- 上記ルールに合致する明らかな記号は正確にカウントしてください。
-- 判読不能、あるいは安打か凡打か全く断定できない箇所のみ数値を null、文字列を "UNREADABLE" とし、is_unreadable を true にしてください。
-
 【出力フォーマット（JSON配列のみ返却）】
-※交代があった打順は、必ず上段選手と下段選手の2つのオブジェクトを分けて出力してください。
+確信がある項目のみ整数を入れ、判読不能・曖昧な数値は必ず null にしてください。
 [
   {
     "match_date": "試合日（不明なら UNREADABLE）",
     "opponent": "相手チーム名（不明なら UNREADABLE）",
     "batting_order": 打順番号,
-    "uniform_number": "背番号",
-    "player_name": "選手名",
+    "uniform_number": "背番号（数字のみ、不明なら UNREADABLE）",
+    "player_name": "選手名（不明なら UNREADABLE）",
     "plate_appearances": 打席数(数値またはnull),
     "at_bats": 打数(数値またはnull),
     "hits": 単打数(数値またはnull),
@@ -87,12 +78,13 @@ SYSTEM_PROMPT = """
     "stolen_bases": 盗塁数(数値またはnull),
     "rbi": 打点(数値またはnull),
     "runs": 得点(数値またはnull),
-    "highlight": "その試合の印象的なプレー（曖昧なら空文字）",
+    "highlight": "印象的な好プレー（曖昧なら空文字）",
     "is_unreadable": 読めない箇所があれば true,
-    "unreadable_note": "未判別理由（例: 交代イニング境界の要確認）"
+    "unreadable_note": "未判別理由（特に問題なければ空文字）"
   }
 ]
 """
+
 
 def create_excel(records):
     wb = openpyxl.Workbook()
@@ -105,14 +97,30 @@ def create_excel(records):
 
     players = {}
     for r in records:
-        name = r.get("player_name") or "未登録"
-        num = r.get("uniform_number") or ""
-        key = f"{num}_{name}".strip("_")
-        players.setdefault(key, []).append(r)
+        name = str(r.get("player_name") or "未登録").strip()
+        num = str(r.get("uniform_number") or "").strip()
+        order = str(r.get("batting_order") or "").strip()
+
+        # 背番号と名前を明示的に組み合わせてシート名キーを作成
+        if num and num != "UNREADABLE":
+            sheet_title = f"{num}_{name}"
+        elif order:
+            sheet_title = f"{order}番_{name}"
+        else:
+            sheet_title = name
+
+        # Excelのシート名に使えない文字を除去
+        for ch in [":", "\\", "/", "?", "*", "[", "]"]:
+            sheet_title = sheet_title.replace(ch, "")
+
+        players.setdefault(sheet_title, []).append(r)
 
     headers = [
         "日付",
         "対戦相手",
+        "背番号",
+        "選手名",
+        "打順",
         "打席",
         "打数",
         "安打",
@@ -129,8 +137,8 @@ def create_excel(records):
         "要確認メモ",
     ]
 
-    for player_key, matches in players.items():
-        ws = wb.create_sheet(title=player_key[:30])
+    for sheet_name, matches in players.items():
+        ws = wb.create_sheet(title=sheet_name[:30])
         ws.append(headers)
 
         for col in range(1, len(headers) + 1):
@@ -142,6 +150,9 @@ def create_excel(records):
             row = [
                 m.get("match_date"),
                 m.get("opponent"),
+                m.get("uniform_number"),
+                m.get("player_name"),
+                m.get("batting_order"),
                 m.get("plate_appearances"),
                 m.get("at_bats"),
                 m.get("hits"),
@@ -256,7 +267,7 @@ with tab_kids:
     else:
         df = pd.DataFrame(st.session_state.records)
 
-        # 選手名のユニーク一覧
+        # 選手名のユニーク一覧（背番号＋名前）
         df["display_name"] = (
             df["uniform_number"].fillna("").astype(str)
             + " "
@@ -267,25 +278,22 @@ with tab_kids:
         st.subheader("🎖️ チームタイトル・アワード")
         col1, col2, col3 = st.columns(3)
 
-        # 最多安打
         hit_leaders = (
-            df.groupby("player_name")["hits"].sum().sort_values(ascending=False)
+            df.groupby("display_name")["hits"].sum().sort_values(ascending=False)
         )
         if not hit_leaders.empty and hit_leaders.iloc[0] > 0:
             col1.metric("チーム最多安打", f"{hit_leaders.index[0]} 選手", f"{int(hit_leaders.iloc[0])} 本")
 
-        # 盗塁王
         sb_leaders = (
-            df.groupby("player_name")["stolen_bases"]
+            df.groupby("display_name")["stolen_bases"]
             .sum()
             .sort_values(ascending=False)
         )
         if not sb_leaders.empty and sb_leaders.iloc[0] > 0:
             col2.metric("スピードスター賞（最多盗塁）", f"{sb_leaders.index[0]} 選手", f"{int(sb_leaders.iloc[0])} 個")
 
-        # ホームラン王
         hr_leaders = (
-            df.groupby("player_name")["homeruns"]
+            df.groupby("display_name")["homeruns"]
             .sum()
             .sort_values(ascending=False)
         )
@@ -294,13 +302,11 @@ with tab_kids:
 
         st.divider()
 
-        # 個別選手カード表示
         st.subheader("⚾️ 卒団記念 デジタル選手名鑑")
         selected_player = st.selectbox("選手を選択してください", players)
 
         player_data = df[df["display_name"] == selected_player]
 
-        # 個人通算集計
         ab = player_data["at_bats"].sum()
         h = (
             player_data["hits"].sum()
