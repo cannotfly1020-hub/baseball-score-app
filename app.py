@@ -17,6 +17,8 @@ if "raw_players" not in st.session_state:
     st.session_state.raw_players = []
 if "match_info" not in st.session_state:
     st.session_state.match_info = {"date": "", "opponent": ""}
+if "uploaded_images" not in st.session_state:
+    st.session_state.uploaded_images = []
 
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
@@ -31,7 +33,6 @@ SYSTEM_PROMPT = """
 
 【最重要：選手名・背番号の厳格な分離（二段書きの選手交代）】
 - 打順欄に上下二段で名前がある場合、背番号が異なれば完全に別人の選手です。
-  絶対に1人の選手にまとめたり、上下で同じ名前を流用したり、スキップしてはいけません。
   必ず「先発選手（上段）」と「交代選手（下段）」を別々の選手オブジェクトとして出力してください。
   （例: 9番枠の背番号19と背番号21は別人）
 - 先発選手: 交代前の打席（1〜3回など）のみを含める。
@@ -78,7 +79,6 @@ RESULT_OPTIONS = ["なし", "凡打", "単打", "2塁打", "3塁打", "本塁打
 
 
 def calculate_stats_from_grid(df_grid):
-    """グリッドの入力値から合計打撃成績を正確に計算する"""
     calculated_rows = []
 
     for _, r in df_grid.iterrows():
@@ -206,7 +206,6 @@ def create_excel_from_calc(df_calc, match_date, opponent):
             ws.append(row)
             curr_row = ws.max_row
 
-            # 選手名が未登録など不確実な項目をハイライト
             for idx, val in enumerate(row, start=1):
                 cell = ws.cell(row=curr_row, column=idx)
                 if val is None or val == "未登録" or val == "未記入":
@@ -227,8 +226,8 @@ tab_admin, tab_kids = st.tabs(
 # ① 役員用画面
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア入力盤面（AIアシスト ＋ ポチポチ確定）")
-    st.caption("AIが選手名・背番号・凡打や四死球を下書きします。画面上の表で赤線（安打・生還）を数回ポチポチするだけで100%正確に集計できます。")
+    st.subheader("手書きスコア入力盤面（画像照合 ＋ ポチポチ確定）")
+    st.caption("AIが選手名・背番号・凡打や四死球を下書きします。画面上の画像を見ながら、赤線の安打・生還を数回直すだけで集計が完了します。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください。")
@@ -243,12 +242,14 @@ with tab_admin:
     if uploaded_files:
         if st.button("AIで下書きを作成する", type="primary"):
             grid_data = []
+            st.session_state.uploaded_images = []
             progress = st.progress(0)
             status = st.empty()
 
             for i, f in enumerate(uploaded_files):
                 status.text(f"読み取り中 ({i+1}/{len(uploaded_files)}): {f.name}...")
                 img_bytes = f.read()
+                st.session_state.uploaded_images.append({"name": f.name, "bytes": img_bytes})
 
                 try:
                     res = client.models.generate_content(
@@ -265,7 +266,6 @@ with tab_admin:
                     )
                     parsed = json.loads(res.text)
 
-                    # 試合情報の保持
                     if isinstance(parsed, dict):
                         st.session_state.match_info["date"] = parsed.get("match_date", "")
                         st.session_state.match_info["opponent"] = parsed.get("opponent", "")
@@ -300,13 +300,18 @@ with tab_admin:
             status.empty()
             if grid_data:
                 st.session_state.raw_players = grid_data
-                st.success("🎉 下書き作成が完了しました！下の表で赤線の安打・生還等を確認してください。")
+                st.success("🎉 下書き作成が完了しました！下のプレビュー画像を見ながら確認・修正してください。")
 
     if st.session_state.raw_players:
-        st.markdown("### ⚾️ 打席盤面エディタ（確認・修正）")
-        st.caption("各打席のドロップダウンで「単打 / 2塁打 / 3塁打 / 本塁打 / 四球」などを切り替え、ホームインした回は「生還」にチェックを入れてください。")
+        # スコア写真のプレビュー表示エリア
+        if st.session_state.uploaded_images:
+            with st.expander("📷 読み込んだスコアブック写真（確認用プレビュー）", expanded=True):
+                for img_data in st.session_state.uploaded_images:
+                    st.image(img_data["bytes"], caption=img_data["name"], use_container_width=True)
 
-        # 試合日・対戦相手の修正欄
+        st.markdown("### ⚾️ 打席盤面エディタ（確認・修正）")
+        st.caption("上の写真を見比べながら、ドロップダウンで「単打 / 2塁打 / 3塁打 / 本塁打 / 四球」などを切り替え、生還した回はチェックを入れてください。")
+
         col_m1, col_m2 = st.columns(2)
         match_date = col_m1.text_input("試合日", value=st.session_state.match_info.get("date", ""))
         opponent = col_m2.text_input("対戦相手", value=st.session_state.match_info.get("opponent", ""))
