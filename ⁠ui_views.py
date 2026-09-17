@@ -2,7 +2,7 @@ import streamlit as st
 
 def apply_app_style():
     """
-    アプリUIデザイン・CSS管理関数
+    アプリ全体のUIデザイン・CSS管理関数
     """
     st.markdown("""
     <style>
