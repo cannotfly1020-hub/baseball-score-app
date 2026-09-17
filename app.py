@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageFilter
 
 # prompts.py から指示文を読み込み
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
