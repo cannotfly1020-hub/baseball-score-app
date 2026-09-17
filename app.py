@@ -8,9 +8,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
-# プロンプトと画像処理のみ読み込み
+# 分離した設定・関数をインポート
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
+from style import apply_app_style
 
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
@@ -18,35 +19,8 @@ st.set_page_config(
     layout="wide",
 )
 
-# 最低限の安全なスタイルのみ適用
-st.markdown("""
-<style>
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-    overflow-x: auto !important;
-    white-space: nowrap !important;
-    padding-bottom: 6px;
-    -webkit-overflow-scrolling: touch;
-}
-.stTabs [data-baseweb="tab"] {
-    padding: 6px 14px;
-    border-radius: 16px;
-    background-color: rgba(120, 120, 120, 0.12);
-    font-size: 0.9rem;
-}
-.sticky-mobile-viewer {
-    position: -webkit-sticky;
-    position: sticky;
-    top: 3.5rem;
-    z-index: 99;
-    background-color: rgba(25, 25, 25, 0.95);
-    padding: 8px;
-    border-radius: 10px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
-    margin-bottom: 12px;
-}
-</style>
-""", unsafe_allow_html=True)
+# 分離したデザイン専用ファイルからスタイルを適用
+apply_app_style()
 
 # セッション状態の初期化
 if "all_matches_data" not in st.session_state:
@@ -101,7 +75,7 @@ with tab_admin:
                 highres_bytes = enhance_sharpness(pil_img)
 
                 try:
-                    # Step 1
+                    # Step 1: 選手名簿の確定
                     res_roster = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
@@ -116,7 +90,7 @@ with tab_admin:
                     )
                     roster_data = res_roster.text
 
-                    # Step 2
+                    # Step 2: 打席判定
                     status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の全イニング打席を精査中...")
                     res_details = client.models.generate_content(
                         model="gemini-3.6-flash",
