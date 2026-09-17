@@ -3,15 +3,14 @@ import json
 import base64
 from google import genai
 from google.genai import types
-import openpyxl
-from openpyxl.styles import Alignment, Font, PatternFill
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 
-# prompts.py から指示文を読み込み
+# 分離したファイルから読み込み
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
+from data_utils import RESULT_OPTIONS, enhance_red_pen, calculate_stats_from_grid, create_excel_from_compiled
 
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
@@ -64,153 +63,6 @@ if not api_key:
 
 client = genai.Client(api_key=api_key) if api_key else None
 
-# ==========================================
-# 画像前処理：赤色インク強調画像の生成
-# ==========================================
-def enhance_red_pen(pil_img):
-    """早稲田式の赤ペン結線（安打）を浮き彫りにし、重なった黒インクを弱めるフィルタ"""
-    rgb_img = pil_img.convert("RGB")
-    r, g, b = rgb_img.split()
-    
-    # 赤色成分の強調: RがGやBより強いピクセルを際立たせる
-    import numpy as np
-    r_arr = np.array(r, dtype=np.int16)
-    g_arr = np.array(g, dtype=np.int16)
-    b_arr = np.array(b, dtype=np.int16)
-    
-    # 赤の強さ = R - (G + B) / 2
-    redness = r_arr - ((g_arr + b_arr) // 2)
-    redness = np.clip(redness * 3, 0, 255).astype(np.uint8)
-    
-    # 赤ペン部分を強調した画像を生成
-    enhanced_pil = Image.fromarray(redness, mode="L").convert("RGB")
-    
-    # コントラストを引き上げる
-    enhancer = ImageEnhance.Contrast(enhanced_pil)
-    final_img = enhancer.enhance(2.0)
-    
-    buf = io.BytesIO()
-    final_img.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
-
-# 打席結果の選択肢リスト（「要確認」を含む）
-RESULT_OPTIONS = ["なし", "要確認", "単打", "2塁打", "3塁打", "本塁打", "四球", "死球", "三振", "凡打", "犠打"]
-
-def calculate_stats_from_grid(grid_players, match_file_name=""):
-    compiled_records = []
-    for p in grid_players:
-        ab = 0
-        hits = 0
-        doubles = 0
-        triples = 0
-        hrs = 0
-        so = 0
-        bb = 0
-        db = 0
-        pa = 0
-
-        for inn_str in ["1", "2", "3", "4", "5", "6", "7"]:
-            res = p["innings"].get(inn_str, "なし")
-            if res == "なし":
-                continue
-            pa += 1
-            if res == "単打":
-                hits += 1
-                ab += 1
-            elif res == "2塁打":
-                doubles += 1
-                ab += 1
-            elif res == "3塁打":
-                triples += 1
-                ab += 1
-            elif res == "本塁打":
-                hrs += 1
-                ab += 1
-            elif res == "三振":
-                so += 1
-                ab += 1
-            elif res == "凡打":
-                ab += 1
-            elif res == "四球":
-                bb += 1
-            elif res == "死球":
-                db += 1
-            elif res == "犠打":
-                pass
-            elif res == "要確認":
-                pass
-
-        compiled_records.append({
-            "source_file": match_file_name,
-            "match_date": p.get("match_date", "-"),
-            "opponent": p.get("opponent", "-"),
-            "batting_order": p.get("batting_order", 0),
-            "uniform_number": str(p.get("uniform_number", "")).strip(),
-            "player_name": str(p.get("player_name", "未登録")).strip(),
-            "plate_appearances": pa,
-            "at_bats": ab,
-            "hits": hits,
-            "doubles": doubles,
-            "triples": triples,
-            "homeruns": hrs,
-            "strikeouts": so,
-            "walks": bb,
-            "dead_ball": db,
-            "stolen_bases": int(p.get("stolen_bases", 0)),
-            "rbi": int(p.get("rbi", 0)),
-            "runs": 0,
-            "highlight": p.get("highlight", "")
-        })
-    return compiled_records
-
-def create_excel_from_compiled(all_records):
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)
-
-    players = {}
-    for r in all_records:
-        name = (r.get("player_name") or "未登録").strip()
-        players.setdefault(name, []).append(r)
-
-    headers = [
-        "背番号", "試合日", "対戦相手", "打席", "打数", "安打", "2塁打", "3塁打", "本塁打",
-        "三振", "四球", "死球", "盗塁", "打点", "得点", "ハイライト"
-    ]
-
-    for player_name, matches in players.items():
-        sheet_title = player_name[:30] if player_name else "未登録"
-        ws = wb.create_sheet(title=sheet_title)
-        ws.append(headers)
-
-        for col in range(1, len(headers) + 1):
-            c = ws.cell(row=1, column=col)
-            c.font = Font(bold=True)
-            c.alignment = Alignment(horizontal="center")
-
-        for m in matches:
-            ws.append([
-                m.get("uniform_number", ""),
-                m.get("match_date", "-"),
-                m.get("opponent", "-"),
-                m.get("plate_appearances", 0),
-                m.get("at_bats", 0),
-                m.get("hits", 0),
-                m.get("doubles", 0),
-                m.get("triples", 0),
-                m.get("homeruns", 0),
-                m.get("strikeouts", 0),
-                m.get("walks", 0),
-                m.get("dead_ball", 0),
-                m.get("stolen_bases", 0),
-                m.get("rbi", 0),
-                m.get("runs", 0),
-                m.get("highlight", "")
-            ])
-
-    output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue()
-
 # タブ構成
 tab_admin, tab_kids = st.tabs(
     ["📝 役員用（複数試合一括解析＆ポチポチ確定）", "🏆 選手名鑑＆アワード"]
@@ -247,7 +99,7 @@ with tab_admin:
                 raw_bytes = f.read()
                 new_images_b64[f_name] = base64.b64encode(raw_bytes).decode()
                 
-                # 画像の赤ペン強調処理
+                # 画像の鮮鋭化・最高画質処理
                 pil_img = Image.open(io.BytesIO(raw_bytes))
                 enhanced_red_bytes = enhance_red_pen(pil_img)
 
