@@ -1,4 +1,5 @@
 import io
+import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 import openpyxl
 from openpyxl.styles import Alignment, Font
@@ -7,25 +8,43 @@ from openpyxl.styles import Alignment, Font
 RESULT_OPTIONS = ["なし", "要確認", "単打", "2塁打", "3塁打", "本塁打", "四球", "死球", "三振", "凡打", "犠打"]
 
 # ==========================================
-# 画像前処理：高解像度・輪郭鮮鋭化処理
+# 画像前処理 1：高解像度・輪郭鮮鋭化処理（全体把握用）
 # ==========================================
-def enhance_red_pen(pil_img):
-    """画像の解像度・細部を落とさず、インクの輪郭をクッキリ鮮明化する高画質処理"""
+def enhance_sharpness(pil_img):
+    """解像度・細部を維持しつつ、輪郭をくっきりさせる高画質処理"""
     rgb_img = pil_img.convert("RGB")
-    
-    # 1. 輪郭の鮮鋭化（アンシャープマスクで細いペンのエッジを強調）
     sharpened = rgb_img.filter(ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3))
-    
-    # 2. コントラストと明度の最適化
     enhancer_con = ImageEnhance.Contrast(sharpened)
-    high_res_img = enhancer_con.enhance(1.25)
+    high_res = enhancer_con.enhance(1.2)
     
-    enhancer_col = ImageEnhance.Color(high_res_img)
-    final_img = enhancer_col.enhance(1.3)
-
-    # 3. 最高画質でバイトデータ化（色間引きなし subsampling=0 で細部を完全保持）
     buf = io.BytesIO()
-    final_img.save(buf, format="JPEG", quality=98, subsampling=0)
+    high_res.save(buf, format="JPEG", quality=98, subsampling=0)
+    return buf.getvalue()
+
+# ==========================================
+# 画像前処理 2：赤ペン結線 特化抽出エンジン（赤線検証用）
+# ==========================================
+def extract_red_only(pil_img):
+    """黒鉛筆やスコア枠線を消し去り、赤ペン・朱肉インクのみを強烈に浮き彫りにする処理"""
+    rgb_img = pil_img.convert("RGB")
+    r, g, b = rgb_img.split()
+    
+    r_arr = np.array(r, dtype=np.int16)
+    g_arr = np.array(g, dtype=np.int16)
+    b_arr = np.array(b, dtype=np.int16)
+    
+    # 赤の純度: Rが G や B よりどれだけ際立っているか
+    # 黒鉛筆（R≒G≒B）や白い紙面は 0（真っ黒）になり、赤い筆跡だけがプラスになる
+    redness = r_arr - np.maximum(g_arr, b_arr)
+    redness = np.clip(redness * 4, 0, 255).astype(np.uint8)
+    
+    # コントラストを最大化して赤インクの線を白く発光させる
+    red_mask = Image.fromarray(redness, mode="L")
+    red_mask = ImageEnhance.Contrast(red_mask).enhance(3.0)
+    
+    # 黒背景に鮮烈な白〜赤の線として出力
+    buf = io.BytesIO()
+    red_mask.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
 # ==========================================
