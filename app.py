@@ -1,6 +1,7 @@
 import io
 import json
 import base64
+from datetime import datetime
 from google import genai
 from google.genai import types
 import pandas as pd
@@ -8,6 +9,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
+# 既存モジュールをそのまま読み込み（完全維持）
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
 
@@ -18,7 +20,7 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# チームカラー UIデザイン（ボタン視認性・文字色強化版）
+# チームカラー UIデザイン（天然芝グリーン × クリムゾンレッド × ゴールド）
 # ----------------------------------------------------
 st.markdown("""
 <style>
@@ -98,20 +100,19 @@ div[data-testid="stForm"] {
     box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
 }
 
-/* フォーム内のラベル・見出しのみを黒に固定 */
 div[data-testid="stForm"] label,
 div[data-testid="stForm"] h5 {
     color: #111111 !important;
     font-weight: bold !important;
 }
 
-/* 9. 【最重要】「この選手の変更を保存」ボタンの文字色と背景を完全に視認化 */
+/* 9. 「保存」ボタンの文字色と背景 */
 div[data-testid="stForm"] button[kind="secondaryFormSubmit"],
 div[data-testid="stForm"] button[data-testid="stBaseButton-secondaryFormSubmit"],
 div[data-testid="stForm"] button {
-    background-color: #991b1b !important; /* ユニフォームの赤 */
-    color: #ffffff !important;           /* はっきり見える白文字 */
-    border: 2px solid #d4af37 !important; /* 金色のストライプ枠 */
+    background-color: #991b1b !important;
+    color: #ffffff !important;
+    border: 2px solid #d4af37 !important;
     border-radius: 8px !important;
     font-weight: bold !important;
     font-size: 0.95rem !important;
@@ -119,10 +120,10 @@ div[data-testid="stForm"] button {
     box-shadow: 0 2px 6px rgba(0,0,0,0.2) !important;
 }
 div[data-testid="stForm"] button * {
-    color: #ffffff !important;           /* アイコンや内部テキストも全て白 */
+    color: #ffffff !important;
 }
 
-/* 10. イニング枠ヘッダー（◇ ダイヤモンド）の文字を金色＋白でハッキリ表示 */
+/* 10. イニング枠ヘッダー（◇ ダイヤモンド） */
 .inning-header {
     text-align: center;
     background-color: #1b382b;
@@ -140,7 +141,16 @@ div[data-testid="stForm"] button * {
     font-size: 0.85rem;
 }
 
-/* 11. 固定画像ビューワー */
+/* 11. バックアップ操作ボックス */
+.backup-box {
+    background-color: #172d22;
+    border: 1px solid #d4af37;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 12px;
+}
+
+/* 12. 固定画像ビューワー */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
@@ -180,12 +190,34 @@ with tab_admin:
     st.subheader("⚾️ スコア照合・打席盤面エディタ")
     st.caption("高精細カラー解析により、手書き文字および赤ペン結線を走査・判定します。")
 
+    # ----------------------------------------------------
+    # バックアップ読み込み（前回の続きから再開）
+    # ----------------------------------------------------
+    with st.expander("📂 前回の作業バックアップ（JSON）を読み込んで再開する", expanded=False):
+        backup_file = st.file_uploader(
+            "保存したバックアップJSONファイルを選択",
+            type=["json"],
+            key="backup_uploader"
+        )
+        if backup_file is not None:
+            if st.button("このバックアップから作業を完全復元する", type="secondary"):
+                try:
+                    loaded_data = json.loads(backup_file.read().decode("utf-8"))
+                    st.session_state.all_matches_data = loaded_data.get("all_matches_data", {})
+                    st.session_state.match_images_b64 = loaded_data.get("match_images_b64", {})
+                    st.success(f"🎉 バックアップから全 {len(st.session_state.all_matches_data)} 試合分の編集状態を復元しました！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"バックアップ復元エラー: {e}")
+
+    st.divider()
+
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
         st.stop()
 
     uploaded_files = st.file_uploader(
-        "スコアブック写真を選択（複数ファイル選択可）",
+        "新規スコアブック写真を選択（複数ファイル選択可）",
         type=["jpg", "jpeg", "png"],
         accept_multiple_files=True
     )
@@ -251,8 +283,28 @@ with tab_admin:
                 st.session_state.match_images_b64 = new_images_b64
                 st.success(f"🎉 全 {len(new_all_matches)} 試合分の解析が完了しました！")
 
+    # ----------------------------------------------------
+    # データが存在する場合の編集エディタ & バックアップ保存
+    # ----------------------------------------------------
     if st.session_state.all_matches_data:
         st.divider()
+
+        # バックアップダウンロード機能
+        current_backup_payload = {
+            "all_matches_data": st.session_state.all_matches_data,
+            "match_images_b64": st.session_state.match_images_b64,
+            "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        json_string = json.dumps(current_backup_payload, ensure_ascii=False, indent=2)
+
+        st.download_button(
+            label="💾 現在の作業状態をバックアップ保存 (JSONダウンロード)",
+            data=json_string,
+            file_name=f"学童野球スコア_途中作業データ_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
         match_files = list(st.session_state.all_matches_data.keys())
         
         top_c1, top_c2 = st.columns([2, 1])
