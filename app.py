@@ -10,7 +10,7 @@ from PIL import Image
 
 # 分離したファイルから読み込み
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
-from data_utils import RESULT_OPTIONS, enhance_red_pen, calculate_stats_from_grid, create_excel_from_compiled
+from data_utils import RESULT_OPTIONS, enhance_sharpness, extract_red_only, calculate_stats_from_grid, create_excel_from_compiled
 
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
@@ -73,7 +73,7 @@ tab_admin, tab_kids = st.tabs(
 # ==========================================
 with tab_admin:
     st.subheader("手書きスコア解析 ＆ 照合エディタ（高精度サボり防止エンジン）")
-    st.caption("赤線強調フィルタ、打順連続性チェック、四角結線×得点丸の厳格分離により、全打席を高精度に走査・判定します。")
+    st.caption("赤線特化抽出フィルタ、打順連続性チェック、四角結線×得点丸の厳格分離により、全打席を高精度に走査・判定します。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -95,20 +95,21 @@ with tab_admin:
 
             for idx, f in enumerate(uploaded_files):
                 f_name = f.name
-                status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の高解像度鮮鋭化＆選手名簿を確定中...")
+                status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の高解像度化＆赤ペン特化抽出中...")
                 raw_bytes = f.read()
                 new_images_b64[f_name] = base64.b64encode(raw_bytes).decode()
                 
-                # 画像の高解像度・輪郭鮮鋭化処理（アンシャープマスク & 最高画質保持）
+                # 画像のデュアル生成（原本鮮鋭化 ＆ 純粋な赤インクのみの抽出）
                 pil_img = Image.open(io.BytesIO(raw_bytes))
-                enhanced_highres_bytes = enhance_red_pen(pil_img)
+                highres_bytes = enhance_sharpness(pil_img)
+                red_only_bytes = extract_red_only(pil_img)
 
                 try:
-                    # Step 1: 選手名簿の確定（鮮鋭化した最高画質画像を渡す）
+                    # Step 1: 選手名簿の確定
                     res_roster = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(data=enhanced_highres_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
                             "スコアブック左側の打順・背番号・選手名（先発・交代・代打二段書き含む）を漏れなく抽出してください。"
                         ],
                         config=types.GenerateContentConfig(
@@ -119,13 +120,17 @@ with tab_admin:
                     )
                     roster_data = res_roster.text
 
-                    # Step 2: 選手枠に基づき全打席マス目を判定（鮮鋭化画像でエッジ・赤線をくっきり識別）
-                    status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の全イニング打席を走査中（迷ったら「要確認」）...")
+                    # Step 2: 2枚の画像（原本 ＋ 赤インク抽出）を照合して全打席を判定
+                    status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の赤ペン結線をデュアル画像で完全走査中...")
                     res_details = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(data=enhanced_highres_bytes, mime_type="image/jpeg"),
-                            f"確定選手名簿:\n{roster_data}\n\n上記選手枠に基づき、スコアブックの1回〜7回の全打席詳細、打点、盗塁を判定してください。赤線と得点丸が重なって判別できない打席は迷わず「要確認」としてください。"
+                            types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=red_only_bytes, mime_type="image/jpeg"),
+                            f"""確定選手名簿:\n{roster_data}\n\n
+【最重要照合指示】
+1枚目は全体の高精細原本、2枚目は「黒鉛筆を消去し、純粋な赤ペンインクのみを白く浮き彫りにした画像」です。
+1枚目だけで判断せず、必ず2枚目の赤インク抽出画像と照合して、ダイヤモンドの各辺（一塁、二塁、三塁、本塁）に赤線がどこまで引かれているかを確認して判定してください。"""
                         ],
                         config=types.GenerateContentConfig(
                             system_instruction=DETAILS_PROMPT,
