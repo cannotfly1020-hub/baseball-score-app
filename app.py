@@ -9,8 +9,29 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
+# コアモジュールから重要関数のみ読み込み（安全に維持）
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
-from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
+from data_utils import enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
+
+# ----------------------------------------------------
+# 打席結果の完全選択肢（キャッシュ詰まりを防ぐため直接定義）
+# ----------------------------------------------------
+RESULT_OPTIONS = [
+    "なし",
+    "単打",
+    "二塁打",
+    "三塁打",
+    "本塁打",
+    "四球",
+    "死球",
+    "犠打",
+    "犠飛",
+    "凡打",
+    "三振",
+    "敵失",
+    "野選",
+    "振り逃げ"
+]
 
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
