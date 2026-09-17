@@ -28,7 +28,7 @@ st.markdown("""
     color: #f0f4f1 !important;
 }
 
-/* 2. スマホ上部メニューバーとの重なりを防ぐ十分な上部スペース（3.8rem） */
+/* 2. スマホ上部メニューバーとの重なりを防ぐ上部スペース */
 .block-container {
     padding-top: 3.8rem !important;
     padding-bottom: 2rem !important;
@@ -48,7 +48,7 @@ st.markdown("""
     margin-bottom: 1rem !important;
 }
 
-/* 4. 非選択タブ：文字が見切れないゆとりある高さ */
+/* 4. 非選択タブ */
 .stTabs [data-baseweb="tab"] {
     height: auto !important;
     min-height: 40px !important;
@@ -191,7 +191,7 @@ with tab_admin:
                 try:
                     # Step 1: 選手名簿の確定
                     res_roster = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
                             "スコアブック左側の打順・背番号・選手名（先発・交代・代打二段書き含む）を漏れなく抽出してください。"
@@ -207,7 +207,7 @@ with tab_admin:
                     # Step 2: 打席判定
                     status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の全イニング打席を精査中...")
                     res_details = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=[
                             types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
                             f"確定選手名簿:\n{roster_data}\n\n上記選手枠に基づき、スコアブックの1回〜7回の全打席詳細、打点、盗塁を判定してください。"
