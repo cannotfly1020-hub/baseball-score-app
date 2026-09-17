@@ -19,23 +19,85 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# UIデザイン設定（インポートエラーを防ぐため直書き）
+# チームカラー UIデザイン（深緑 × 赤・金ストライプ）
 # ----------------------------------------------------
 st.markdown("""
 <style>
+/* スマホ余白の最適化 */
+.block-container {
+    padding-top: 1.5rem !important;
+    padding-bottom: 2rem !important;
+    padding-left: 0.8rem !important;
+    padding-right: 0.8rem !important;
+}
+
+/* タブバー：天然芝の深緑ベース */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
+    gap: 6px;
     overflow-x: auto !important;
     white-space: nowrap !important;
-    padding-bottom: 6px;
+    padding: 6px 8px;
+    background-color: #1b382b !important;
+    border-radius: 10px;
+    border-bottom: 3px solid #d4af37; /* 金色ストライプ */
     -webkit-overflow-scrolling: touch;
 }
+
+/* 非選択タブ：落ち着いたグラウンドグリーン */
 .stTabs [data-baseweb="tab"] {
     padding: 6px 14px;
-    border-radius: 16px;
-    background-color: rgba(120, 120, 120, 0.12);
-    font-size: 0.9rem;
+    border-radius: 8px;
+    background-color: #264d3b !important;
+    color: #e0ece4 !important;
+    font-weight: 600;
+    font-size: 0.88rem;
+    border: 1px solid #14281f;
 }
+
+/* 選択中タブ：ユニフォームの赤 ＋ 金色の縁取り */
+.stTabs [aria-selected="true"] {
+    background-color: #a81c1c !important;
+    color: #ffffff !important;
+    border: 2px solid #d4af37 !important;
+    font-weight: bold;
+}
+
+/* 選手カード枠：清潔なスコア用紙白 ＋ 左側に赤と金のアクセントライン */
+div[data-testid="stForm"] {
+    background-color: #ffffff !important;
+    border: 1px solid #c8c2b5 !important;
+    border-left: 6px solid #a81c1c !important; /* 赤ライン */
+    border-radius: 8px !important;
+    padding: 14px 12px !important;
+    box-shadow: 0 3px 8px rgba(0,0,0,0.08) !important;
+}
+
+/* カード内の文字色保護（ダークモードでの黒文字化） */
+div[data-testid="stForm"] label, 
+div[data-testid="stForm"] p, 
+div[data-testid="stForm"] span, 
+div[data-testid="stForm"] div {
+    color: #222222 !important;
+}
+
+/* 各回のヘッダー装飾 */
+.inning-header {
+    text-align: center;
+    background-color: #1b382b;
+    color: #ffffff !important;
+    font-weight: bold;
+    font-size: 0.75rem;
+    padding: 3px 0;
+    border-radius: 4px;
+    margin-bottom: 4px;
+    border-bottom: 2px solid #d4af37;
+}
+.diamond-icon {
+    color: #f1c40f !important;
+    margin-right: 2px;
+}
+
+/* 固定ビューワー枠 */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
@@ -71,8 +133,8 @@ tab_admin, tab_kids = st.tabs(
 # ① 役員用
 # ==========================================
 with tab_admin:
-    st.subheader("手書きスコア解析 ＆ 照合エディタ（高精度エンジン）")
-    st.caption("高精細カラー解析により、手書き文字および安打の赤ペン結線を走査・判定します。")
+    st.subheader("⚾️ スコア照合・打席盤面エディタ")
+    st.caption("高精細カラー解析により、手書き文字および赤ペン結線を走査・判定します。")
 
     if not client:
         st.warning("Gemini APIキーを設定してください（Secrets または サイドバー）。")
@@ -206,33 +268,39 @@ with tab_admin:
                 with p_tab:
                     is_sub = player.get("is_substitute", False)
                     order_val = player.get("batting_order", idx + 1)
-
-                    st.markdown(f"##### **選手情報設定 {'（途中交代・代打）' if is_sub else '（先発）'}**")
+                    u_num_init = str(player.get("uniform_number", "")).strip()
+                    p_name_init = str(player.get("player_name", "")).strip()
 
                     with st.form(key=f"form_player_{selected_match_file}_{idx}"):
+                        st.markdown(f"##### **【{order_val}番】 #{u_num_init or '-'} {p_name_init} {'（途中交代・代打）' if is_sub else '（先発）'}**")
+
                         p_cols = st.columns([1, 2, 3])
-                        u_num = p_cols[0].text_input("背番号", value=str(player.get("uniform_number", "")), key=f"{selected_match_file}_num_{idx}")
-                        p_name = p_cols[1].text_input("選手名（漢字）", value=str(player.get("player_name", "")), key=f"{selected_match_file}_name_{idx}")
+                        u_num = p_cols[0].text_input("背番号", value=u_num_init, key=f"{selected_match_file}_num_{idx}")
+                        p_name = p_cols[1].text_input("選手名（漢字）", value=p_name_init, key=f"{selected_match_file}_name_{idx}")
                         hl = p_cols[2].text_input("ハイライトメモ", value=str(player.get("highlight", "")), key=f"{selected_match_file}_hl_{idx}")
 
                         stat_c1, stat_c2 = st.columns(2)
                         rbi_val = stat_c1.number_input("打点 (RBI)", min_value=0, max_value=20, value=int(player.get("rbi", 0)), step=1, key=f"{selected_match_file}_rbi_{idx}")
                         sb_val = stat_c2.number_input("盗塁数 (SB)", min_value=0, max_value=20, value=int(player.get("stolen_bases", 0)), step=1, key=f"{selected_match_file}_sb_{idx}")
 
-                        st.markdown("**各イニングの打撃結果（1回〜7回）**")
+                        st.markdown("**各回の打席結果（◇ダイヤモンド）**")
                         inn_cols = st.columns(7)
                         new_innings = {}
                         for i_idx, inn_str in enumerate(["1", "2", "3", "4", "5", "6", "7"]):
-                            cur_val = player.get("innings", {}).get(inn_str, "なし")
-                            default_idx = RESULT_OPTIONS.index(cur_val) if cur_val in RESULT_OPTIONS else 0
-                            sel = inn_cols[i_idx].selectbox(
+                            with inn_cols[i_idx]:
+                                st.markdown(f"<div class='inning-header'><span class='diamond-icon'>◇</span>{inn_str}回</div>", unsafe_allow_html=True)
+                                cur_val = player.get("innings", {}).get(inn_str, "なし")
+                                default_idx = RESULT_OPTIONS.index(cur_val) if cur_val in RESULT_OPTIONS else 0
+                                sel = st.selectbox(
                                 f"{inn_str}回",
                                 RESULT_OPTIONS,
                                 index=default_idx,
-                                key=f"{selected_match_file}_inn_{idx}_{inn_str}"
+                                key=f"{selected_match_file}_inn_{idx}_{inn_str}",
+                                label_visibility="collapsed"
                             )
                             new_innings[inn_str] = sel
 
+                        st.write("")
                         submitted = st.form_submit_button("💾 この選手の変更を保存", use_container_width=True)
                         if submitted:
                             st.session_state.all_matches_data[selected_match_file][idx] = {
