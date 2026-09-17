@@ -8,7 +8,6 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
-# 正常稼働している処理・プロンプトをインポート
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
 
@@ -19,53 +18,57 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# チームカラー UIデザイン（天然芝グリーン × クリムゾンレッド × ゴールド）
+# チームカラー UIデザイン（余白・高さ最適化版）
 # ----------------------------------------------------
 st.markdown("""
 <style>
-/* 1. 画面全体の背景：落ち着いた天然芝の深緑（ナイトグラウンド調） */
+/* 1. 画面全体の背景：天然芝の深緑 */
 .stApp {
     background-color: #0f1f17 !important;
     color: #f0f4f1 !important;
 }
 
-/* 2. スマホ余白の最適化 */
+/* 2. スマホ上部メニューバーとの重なりを防ぐ十分な上部スペース（3.8rem） */
 .block-container {
-    padding-top: 1.2rem !important;
+    padding-top: 3.8rem !important;
     padding-bottom: 2rem !important;
     padding-left: 0.8rem !important;
     padding-right: 0.8rem !important;
 }
 
-/* 3. タブバー外枠：金色のアンダーライン */
+/* 3. タブバー外枠：金色アンダーライン */
 .stTabs [data-baseweb="tab-list"] {
-    gap: 6px;
+    gap: 8px;
     overflow-x: auto !important;
     white-space: nowrap !important;
-    padding: 6px 4px 8px 4px !important;
+    padding: 8px 4px 10px 4px !important;
     background-color: transparent !important;
-    border-bottom: 2.5px solid #d4af37 !important; /* ユニフォームの金色ストライプ */
+    border-bottom: 2.5px solid #d4af37 !important;
     -webkit-overflow-scrolling: touch;
+    margin-bottom: 1rem !important;
 }
 
-/* 4. 非選択タブ：落ち着いたグラウンドグリーン＋見切れ防止の余白設定 */
+/* 4. 非選択タブ：文字が見切れないゆとりある高さ */
 .stTabs [data-baseweb="tab"] {
     height: auto !important;
-    padding: 6px 12px !important;
+    min-height: 40px !important;
+    padding: 8px 14px !important;
     border-radius: 8px 8px 0 0 !important;
     background-color: #1b382b !important;
     color: #c2d6cb !important;
-    font-size: 0.82rem !important;
+    font-size: 0.85rem !important;
     font-weight: 600 !important;
     border: 1px solid #2d5a45 !important;
     border-bottom: none !important;
+    display: inline-flex !important;
+    align-items: center !important;
 }
 
-/* 5. 選択中タブ：ユニフォームの深紅（クリムゾンレッド）＋金色の縁取り */
+/* 5. 選択中タブ：ユニフォーム赤 ＋ 金色枠 */
 .stTabs [aria-selected="true"] {
-    background-color: #991b1b !important; /* クリムゾンレッド */
+    background-color: #991b1b !important;
     color: #ffffff !important;
-    border-top: 2.5px solid #d4af37 !important; /* 金色のアクセント */
+    border-top: 2.5px solid #d4af37 !important;
     border-left: 2px solid #d4af37 !important;
     border-right: 2px solid #d4af37 !important;
     border-bottom: none !important;
@@ -77,7 +80,7 @@ h1, h2, h3, h4 {
     color: #ffffff !important;
 }
 
-/* 7. ファイルアップローダー・入力枠の装飾 */
+/* 7. ファイルアップローダー */
 [data-testid="stFileUploader"] {
     background-color: #172d22 !important;
     border: 1px dashed #d4af37 !important;
@@ -85,11 +88,11 @@ h1, h2, h3, h4 {
     padding: 10px !important;
 }
 
-/* 8. 選手カード枠：スコアブック用紙白＋赤＆金のストライプ枠 */
+/* 8. 選手カード枠：スコア用紙白 ＋ 赤金ストライプ枠 */
 div[data-testid="stForm"] {
     background-color: #ffffff !important;
     border: 1px solid #dcd6cd !important;
-    border-left: 6px solid #991b1b !important; /* ユニフォーム赤 */
+    border-left: 6px solid #991b1b !important;
     border-radius: 8px !important;
     padding: 14px 12px !important;
     box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
@@ -101,7 +104,7 @@ div[data-testid="stForm"] div {
     color: #222222 !important;
 }
 
-/* 9. イニング枠ヘッダー（ダイヤモンド◇） */
+/* 9. イニング枠ヘッダー（◇ ダイヤモンド） */
 .inning-header {
     text-align: center;
     background-color: #1b382b;
@@ -118,7 +121,7 @@ div[data-testid="stForm"] div {
     margin-right: 2px;
 }
 
-/* 10. 固定画像ビューワー枠 */
+/* 10. 固定画像ビューワー */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
