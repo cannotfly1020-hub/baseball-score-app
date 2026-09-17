@@ -95,20 +95,20 @@ with tab_admin:
 
             for idx, f in enumerate(uploaded_files):
                 f_name = f.name
-                status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の赤ペン強調＆選手名簿を確定中...")
+                status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の高解像度鮮鋭化＆選手名簿を確定中...")
                 raw_bytes = f.read()
                 new_images_b64[f_name] = base64.b64encode(raw_bytes).decode()
                 
-                # 画像の鮮鋭化・最高画質処理
+                # 画像の高解像度・輪郭鮮鋭化処理（アンシャープマスク & 最高画質保持）
                 pil_img = Image.open(io.BytesIO(raw_bytes))
-                enhanced_red_bytes = enhance_red_pen(pil_img)
+                enhanced_highres_bytes = enhance_red_pen(pil_img)
 
                 try:
-                    # Step 1: 選手名簿の確定
+                    # Step 1: 選手名簿の確定（鮮鋭化した最高画質画像を渡す）
                     res_roster = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=enhanced_highres_bytes, mime_type="image/jpeg"),
                             "スコアブック左側の打順・背番号・選手名（先発・交代・代打二段書き含む）を漏れなく抽出してください。"
                         ],
                         config=types.GenerateContentConfig(
@@ -119,13 +119,12 @@ with tab_admin:
                     )
                     roster_data = res_roster.text
 
-                    # Step 2: 選手枠に基づき全打席マス目を判定
+                    # Step 2: 選手枠に基づき全打席マス目を判定（鮮鋭化画像でエッジ・赤線をくっきり識別）
                     status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の全イニング打席を走査中（迷ったら「要確認」）...")
                     res_details = client.models.generate_content(
                         model="gemini-3.6-flash",
                         contents=[
-                            types.Part.from_bytes(data=raw_bytes, mime_type="image/jpeg"),
-                            types.Part.from_bytes(data=enhanced_red_bytes, mime_type="image/jpeg"),
+                            types.Part.from_bytes(data=enhanced_highres_bytes, mime_type="image/jpeg"),
                             f"確定選手名簿:\n{roster_data}\n\n上記選手枠に基づき、スコアブックの1回〜7回の全打席詳細、打点、盗塁を判定してください。赤線と得点丸が重なって判別できない打席は迷わず「要確認」としてください。"
                         ],
                         config=types.GenerateContentConfig(
