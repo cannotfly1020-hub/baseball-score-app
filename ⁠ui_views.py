@@ -2,8 +2,7 @@ import streamlit as st
 
 def apply_app_style():
     """
-    アプリ全体のデザイン・余白・配色を管理する専用スタイル関数
-    今後デザインを変えたいときは、このファイルの中身だけを編集すればOKです。
+    アプリUIデザイン・CSS管理関数
     """
     st.markdown("""
     <style>
