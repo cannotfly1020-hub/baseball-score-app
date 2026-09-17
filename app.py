@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# チームカラー UIデザイン（キーボード完全抑制・削除ボタン搭載版）
+# チームカラー UIデザイン（完全タップ選択・削除ボタン・視認性強化版）
 # ----------------------------------------------------
 st.markdown("""
 <style>
@@ -105,7 +105,7 @@ div[data-testid="stForm"] h5 {
     font-weight: bold !important;
 }
 
-/* 9. 【スマホ最適化】セレクトボックスのテキスト入力フォーカスを無効化（キーボード立ち上がり防止） */
+/* 9. 【スマホ最適化】セレクトボックスのキーボード立ち上がりを完全防止 */
 div[data-baseweb="select"] input {
     pointer-events: none !important;
     caret-color: transparent !important;
@@ -417,7 +417,7 @@ with tab_admin:
                             st.success(f"{p_name} 選手のデータを保存しました！")
                             st.rerun()
 
-                    # 誤って追加した選手を削除するボタン
+                    # 誤って追加した選手枠の削除ボタン
                     if st.button(f"🗑️ この選手枠（{p_name_init or '追加選手'}）を削除", key=f"del_btn_{selected_match_file}_{idx}"):
                         st.session_state.all_matches_data[selected_match_file].pop(idx)
                         st.warning(f"{p_name_init or '選手'} を削除しました。")
