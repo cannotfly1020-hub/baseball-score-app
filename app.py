@@ -68,17 +68,29 @@ client = genai.Client(api_key=api_key) if api_key else None
 # 画像前処理：赤色インク強調画像の生成
 # ==========================================
 def enhance_red_pen(pil_img):
-    """早稲田式の赤ペン結線（安打）を浮き彫りにする前処理画像を作成"""
+    """早稲田式の赤ペン結線（安打）を浮き彫りにし、重なった黒インクを弱めるフィルタ"""
     rgb_img = pil_img.convert("RGB")
-    enhancer = ImageEnhance.Contrast(rgb_img)
-    contrast_img = enhancer.enhance(1.4)
+    r, g, b = rgb_img.split()
     
-    r, g, b = contrast_img.split()
-    enhanced_r = ImageEnhance.Brightness(r).enhance(1.2)
-    merged = Image.merge("RGB", (enhanced_r, g, b))
+    # 赤色成分の強調: RがGやBより強いピクセルを際立たせる
+    import numpy as np
+    r_arr = np.array(r, dtype=np.int16)
+    g_arr = np.array(g, dtype=np.int16)
+    b_arr = np.array(b, dtype=np.int16)
+    
+    # 赤の強さ = R - (G + B) / 2
+    redness = r_arr - ((g_arr + b_arr) // 2)
+    redness = np.clip(redness * 3, 0, 255).astype(np.uint8)
+    
+    # 赤ペン部分を強調した画像を生成
+    enhanced_pil = Image.fromarray(redness, mode="L").convert("RGB")
+    
+    # コントラストを引き上げる
+    enhancer = ImageEnhance.Contrast(enhanced_pil)
+    final_img = enhancer.enhance(2.0)
     
     buf = io.BytesIO()
-    merged.save(buf, format="JPEG", quality=90)
+    final_img.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
 
 # 打席結果の選択肢リスト（「要確認」を含む）
