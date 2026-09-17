@@ -6,9 +6,13 @@ from google.genai import types
 import streamlit as st
 from PIL import Image
 
-# 分離したモジュールをインポート
+# 1. prompts.py からインポート
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
+
+# 2. data_utils.py からインポート
 from data_utils import enhance_sharpness
+
+# 3. ui_views.py からインポート（名前を完全一致させています）
 from ui_views import apply_custom_css, render_admin_view, render_roster_view
 
 st.set_page_config(
@@ -17,7 +21,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# ui_viewsからCSSスタイルを適用
+# ui_views からデザインスタイルを適用
 apply_custom_css()
 
 # セッション状態の初期化
@@ -33,7 +37,7 @@ if not api_key:
 
 client = genai.Client(api_key=api_key) if api_key else None
 
-# タブ構成
+# メインタブ構成
 tab_admin, tab_kids = st.tabs(
     ["📝 役員用（複数試合一括解析＆ポチポチ確定）", "🏆 選手名鑑＆アワード"]
 )
@@ -72,7 +76,7 @@ with tab_admin:
                 try:
                     # Step 1: 選手名簿の確定
                     res_roster = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model="gemini-2.5-flash",
                         contents=[
                             types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
                             "スコアブック左側の打順・背番号・選手名（先発・交代・代打二段書き含む）を漏れなく抽出してください。"
@@ -88,7 +92,7 @@ with tab_admin:
                     # Step 2: 打席判定
                     status_text.text(f"【{idx+1}/{len(uploaded_files)}】{f_name} の全イニング打席を精査中...")
                     res_details = client.models.generate_content(
-                        model="gemini-3.6-flash",
+                        model="gemini-2.5-flash",
                         contents=[
                             types.Part.from_bytes(data=highres_bytes, mime_type="image/jpeg"),
                             f"確定選手名簿:\n{roster_data}\n\n上記選手枠に基づき、スコアブックの1回〜7回の全打席詳細、打点、盗塁を判定してください。"
@@ -113,12 +117,12 @@ with tab_admin:
                 st.session_state.match_images_b64 = new_images_b64
                 st.success(f"🎉 全 {len(new_all_matches)} 試合分の解析が完了しました！")
 
-    # 画面描画を ui_views に委任
+    # 画面描画（ui_views.py に委任）
     render_admin_view()
 
 # ==========================================
 # ② 選手名鑑＆アワードタブ
 # ==========================================
 with tab_kids:
-    # 画面描画を ui_views に委任
+    # 画面描画（ui_views.py に委任）
     render_roster_view()
