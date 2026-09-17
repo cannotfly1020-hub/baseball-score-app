@@ -8,7 +8,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
 
-# 正常に読み込めている計算・プロンプトのみインポート
+# 正常稼働している処理・プロンプトをインポート
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
 
@@ -19,60 +19,81 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# チームカラー UIデザイン（深緑 × 赤・金ストライプ）
+# チームカラー UIデザイン（天然芝グリーン × クリムゾンレッド × ゴールド）
 # ----------------------------------------------------
 st.markdown("""
 <style>
-/* スマホ余白の最適化 */
+/* 1. 画面全体の背景：落ち着いた天然芝の深緑（ナイトグラウンド調） */
+.stApp {
+    background-color: #0f1f17 !important;
+    color: #f0f4f1 !important;
+}
+
+/* 2. スマホ余白の最適化 */
 .block-container {
-    padding-top: 1.5rem !important;
+    padding-top: 1.2rem !important;
     padding-bottom: 2rem !important;
     padding-left: 0.8rem !important;
     padding-right: 0.8rem !important;
 }
 
-/* タブバー：天然芝の深緑ベース */
+/* 3. タブバー外枠：金色のアンダーライン */
 .stTabs [data-baseweb="tab-list"] {
     gap: 6px;
     overflow-x: auto !important;
     white-space: nowrap !important;
-    padding: 6px 8px;
-    background-color: #1b382b !important;
-    border-radius: 10px;
-    border-bottom: 3px solid #d4af37; /* 金色ストライプ */
+    padding: 6px 4px 8px 4px !important;
+    background-color: transparent !important;
+    border-bottom: 2.5px solid #d4af37 !important; /* ユニフォームの金色ストライプ */
     -webkit-overflow-scrolling: touch;
 }
 
-/* 非選択タブ：落ち着いたグラウンドグリーン */
+/* 4. 非選択タブ：落ち着いたグラウンドグリーン＋見切れ防止の余白設定 */
 .stTabs [data-baseweb="tab"] {
-    padding: 6px 14px;
-    border-radius: 8px;
-    background-color: #264d3b !important;
-    color: #e0ece4 !important;
-    font-weight: 600;
-    font-size: 0.88rem;
-    border: 1px solid #14281f;
+    height: auto !important;
+    padding: 6px 12px !important;
+    border-radius: 8px 8px 0 0 !important;
+    background-color: #1b382b !important;
+    color: #c2d6cb !important;
+    font-size: 0.82rem !important;
+    font-weight: 600 !important;
+    border: 1px solid #2d5a45 !important;
+    border-bottom: none !important;
 }
 
-/* 選択中タブ：ユニフォームの赤 ＋ 金色の縁取り */
+/* 5. 選択中タブ：ユニフォームの深紅（クリムゾンレッド）＋金色の縁取り */
 .stTabs [aria-selected="true"] {
-    background-color: #a81c1c !important;
+    background-color: #991b1b !important; /* クリムゾンレッド */
     color: #ffffff !important;
-    border: 2px solid #d4af37 !important;
-    font-weight: bold;
+    border-top: 2.5px solid #d4af37 !important; /* 金色のアクセント */
+    border-left: 2px solid #d4af37 !important;
+    border-right: 2px solid #d4af37 !important;
+    border-bottom: none !important;
+    font-weight: bold !important;
 }
 
-/* 選手カード枠：清潔なスコア用紙白 ＋ 左側に赤と金のアクセントライン */
+/* 6. 見出し・タイトルの装飾 */
+h1, h2, h3, h4 {
+    color: #ffffff !important;
+}
+
+/* 7. ファイルアップローダー・入力枠の装飾 */
+[data-testid="stFileUploader"] {
+    background-color: #172d22 !important;
+    border: 1px dashed #d4af37 !important;
+    border-radius: 10px !important;
+    padding: 10px !important;
+}
+
+/* 8. 選手カード枠：スコアブック用紙白＋赤＆金のストライプ枠 */
 div[data-testid="stForm"] {
     background-color: #ffffff !important;
-    border: 1px solid #c8c2b5 !important;
-    border-left: 6px solid #a81c1c !important; /* 赤ライン */
+    border: 1px solid #dcd6cd !important;
+    border-left: 6px solid #991b1b !important; /* ユニフォーム赤 */
     border-radius: 8px !important;
     padding: 14px 12px !important;
-    box-shadow: 0 3px 8px rgba(0,0,0,0.08) !important;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
 }
-
-/* カード内の文字色保護（ダークモードでの黒文字化） */
 div[data-testid="stForm"] label, 
 div[data-testid="stForm"] p, 
 div[data-testid="stForm"] span, 
@@ -80,7 +101,7 @@ div[data-testid="stForm"] div {
     color: #222222 !important;
 }
 
-/* 各回のヘッダー装飾 */
+/* 9. イニング枠ヘッダー（ダイヤモンド◇） */
 .inning-header {
     text-align: center;
     background-color: #1b382b;
@@ -97,16 +118,17 @@ div[data-testid="stForm"] div {
     margin-right: 2px;
 }
 
-/* 固定ビューワー枠 */
+/* 10. 固定画像ビューワー枠 */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
     top: 3.5rem;
     z-index: 99;
-    background-color: rgba(25, 25, 25, 0.95);
+    background-color: rgba(15, 31, 23, 0.95);
     padding: 8px;
     border-radius: 10px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6);
+    border: 1px solid #d4af37;
     margin-bottom: 12px;
 }
 </style>
@@ -126,7 +148,7 @@ if not api_key:
 client = genai.Client(api_key=api_key) if api_key else None
 
 tab_admin, tab_kids = st.tabs(
-    ["📝 役員用（複数試合一括解析＆ポチポチ確定）", "🏆 選手名鑑＆アワード"]
+    ["📝 役員用（一括解析＆確定）", "🏆 選手名鑑＆アワード"]
 )
 
 # ==========================================
@@ -292,13 +314,13 @@ with tab_admin:
                                 cur_val = player.get("innings", {}).get(inn_str, "なし")
                                 default_idx = RESULT_OPTIONS.index(cur_val) if cur_val in RESULT_OPTIONS else 0
                                 sel = st.selectbox(
-                                f"{inn_str}回",
-                                RESULT_OPTIONS,
-                                index=default_idx,
-                                key=f"{selected_match_file}_inn_{idx}_{inn_str}",
-                                label_visibility="collapsed"
-                            )
-                            new_innings[inn_str] = sel
+                                    f"{inn_str}回",
+                                    RESULT_OPTIONS,
+                                    index=default_idx,
+                                    key=f"{selected_match_file}_inn_{idx}_{inn_str}",
+                                    label_visibility="collapsed"
+                                )
+                                new_innings[inn_str] = sel
 
                         st.write("")
                         submitted = st.form_submit_button("💾 この選手の変更を保存", use_container_width=True)
