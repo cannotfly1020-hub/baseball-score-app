@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # ----------------------------------------------------
-# チームカラー UIデザイン（余白・高さ最適化版）
+# チームカラー UIデザイン（ボタン視認性・文字色強化版）
 # ----------------------------------------------------
 st.markdown("""
 <style>
@@ -97,31 +97,50 @@ div[data-testid="stForm"] {
     padding: 14px 12px !important;
     box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
 }
-div[data-testid="stForm"] label, 
-div[data-testid="stForm"] p, 
-div[data-testid="stForm"] span, 
-div[data-testid="stForm"] div {
-    color: #222222 !important;
+
+/* フォーム内のラベル・見出しのみを黒に固定 */
+div[data-testid="stForm"] label,
+div[data-testid="stForm"] h5 {
+    color: #111111 !important;
+    font-weight: bold !important;
 }
 
-/* 9. イニング枠ヘッダー（◇ ダイヤモンド） */
+/* 9. 【最重要】「この選手の変更を保存」ボタンの文字色と背景を完全に視認化 */
+div[data-testid="stForm"] button[kind="secondaryFormSubmit"],
+div[data-testid="stForm"] button[data-testid="stBaseButton-secondaryFormSubmit"],
+div[data-testid="stForm"] button {
+    background-color: #991b1b !important; /* ユニフォームの赤 */
+    color: #ffffff !important;           /* はっきり見える白文字 */
+    border: 2px solid #d4af37 !important; /* 金色のストライプ枠 */
+    border-radius: 8px !important;
+    font-weight: bold !important;
+    font-size: 0.95rem !important;
+    padding: 10px !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.2) !important;
+}
+div[data-testid="stForm"] button * {
+    color: #ffffff !important;           /* アイコンや内部テキストも全て白 */
+}
+
+/* 10. イニング枠ヘッダー（◇ ダイヤモンド）の文字を金色＋白でハッキリ表示 */
 .inning-header {
     text-align: center;
     background-color: #1b382b;
     color: #ffffff !important;
     font-weight: bold;
-    font-size: 0.75rem;
-    padding: 3px 0;
+    font-size: 0.8rem;
+    padding: 4px 0;
     border-radius: 4px;
     margin-bottom: 4px;
     border-bottom: 2px solid #d4af37;
 }
 .diamond-icon {
-    color: #f1c40f !important;
-    margin-right: 2px;
+    color: #ffd700 !important;
+    margin-right: 3px;
+    font-size: 0.85rem;
 }
 
-/* 10. 固定画像ビューワー */
+/* 11. 固定画像ビューワー */
 .sticky-mobile-viewer {
     position: -webkit-sticky;
     position: sticky;
