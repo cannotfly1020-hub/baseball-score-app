@@ -13,16 +13,13 @@ from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
 from ui_views import apply_app_style
 
-
-
-
 st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
     page_icon="⚾️",
     layout="wide",
 )
 
-# 分離したデザイン専用ファイルからスタイルを適用
+# ui_views.pyからスタイルを適用
 apply_app_style()
 
 # セッション状態の初期化
