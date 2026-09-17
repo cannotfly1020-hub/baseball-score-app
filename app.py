@@ -11,7 +11,8 @@ from PIL import Image
 # 分離した設定・関数をインポート
 from prompts import ROSTER_PROMPT, DETAILS_PROMPT
 from data_utils import RESULT_OPTIONS, enhance_sharpness, calculate_stats_from_grid, create_excel_from_compiled
-from ui_views import ui_views.py
+from ui_views import apply_app_style
+
 
 
 
