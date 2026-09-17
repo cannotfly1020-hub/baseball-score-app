@@ -1,0 +1,7 @@
+[theme]
+# 芝生の深緑をベースにしたメインテーマ
+primaryColor = "#A81C1C"           # ボタンや選択タブ：ユニフォームの深紅（クリムゾンレッド）
+backgroundColor = "#F4F6F0"        # 画面背景：スコア用紙風の落ち着いたオフホワイト
+secondaryBackgroundColor = "#1E3D2F" # サイドバーやタブバー：天然芝の深緑
+textColor = "#1B2A20"               # 文字色：グラウンドになじむ濃墨色
+font = "sans serif"
