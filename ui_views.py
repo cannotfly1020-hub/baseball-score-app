@@ -4,93 +4,90 @@ import pandas as pd
 from data_utils import RESULT_OPTIONS, create_excel_from_compiled, calculate_stats_from_grid
 
 # ==========================================
-# 早稲田式スコアブック用紙風 CSSスタイル
+# 早稲田式スコアブック用紙風 CSSスタイル（スマホ最適化版）
 # ==========================================
 def apply_custom_css():
     st.markdown("""
     <style>
-    /* 全体のタブデザイン（野球ユニフォームのワッペン風） */
+    /* 全体のタブデザイン（ワッペン風） */
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
+        gap: 6px;
         overflow-x: auto !important;
         white-space: nowrap !important;
-        padding-bottom: 8px;
+        padding-bottom: 6px;
         -webkit-overflow-scrolling: touch;
-        border-bottom: 2px solid #2e4a3d;
+        border-bottom: 2px solid #2e4a3d !important;
     }
     .stTabs [data-baseweb="tab"] {
-        padding: 6px 14px;
-        border-radius: 6px 6px 0 0;
-        background-color: #e2e8e4;
+        padding: 6px 12px !important;
+        border-radius: 6px 6px 0 0 !important;
+        background-color: #e2e8e4 !important;
         color: #1f3328 !important;
-        font-weight: bold;
-        font-size: 0.9rem;
-        border: 1px solid #b7c4bc;
-        border-bottom: none;
+        font-weight: bold !important;
+        font-size: 0.85rem !important;
+        border: 1px solid #b7c4bc !important;
+        border-bottom: none !important;
     }
     .stTabs [aria-selected="true"] {
         background-color: #2b4c3f !important;
         color: #ffffff !important;
-        border: 1px solid #1a3027;
     }
 
-    /* スコアブック用紙カード（温かみのある用紙色＋薄い方眼罫線） */
+    /* スコアブック用紙カード（スマホでも崩れない方眼用紙調） */
     .scorebook-paper {
-        background-color: #faf8f2;
+        background-color: #faf8f2 !important;
         background-image: 
-            linear-gradient(#e8e6dc 1px, transparent 1px),
-            linear-gradient(90deg, #e8e6dc 1px, transparent 1px);
-        background-size: 16px 16px;
-        border: 2px solid #5a4a42;
-        border-radius: 6px;
-        padding: 16px;
-        box-shadow: 2px 3px 8px rgba(0, 0, 0, 0.15);
-        margin-bottom: 12px;
-        color: #2b2b2b;
+            linear-gradient(#e2dfd2 1px, transparent 1px),
+            linear-gradient(90deg, #e2dfd2 1px, transparent 1px) !important;
+        background-size: 14px 14px !important;
+        border: 2px solid #5a4a42 !important;
+        border-radius: 8px !important;
+        padding: 12px 10px !important;
+        box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15) !important;
+        margin-bottom: 12px !important;
     }
 
-    /* 選手名ヘッダー（スコア表の左端欄風） */
+    /* 選手名ヘッダー欄 */
     .scorebook-player-header {
         display: flex;
         align-items: center;
-        gap: 12px;
-        background-color: #efece1;
-        border-bottom: 2px solid #4a3b32;
-        padding: 6px 12px;
+        gap: 8px;
+        background-color: #eee9dc;
+        border-bottom: 2px solid #5a4a42;
+        padding: 6px 10px;
         border-radius: 4px;
-        margin-bottom: 12px;
+        margin-bottom: 10px;
     }
     .uniform-badge {
-        background-color: #c93a3a;
-        color: white;
+        background-color: #b83232;
+        color: #ffffff !important;
         font-weight: 900;
-        font-size: 1.1rem;
-        padding: 2px 8px;
+        font-size: 1rem;
+        padding: 2px 7px;
         border-radius: 4px;
-        border: 1px solid #8c2020;
-        letter-spacing: 1px;
+        letter-spacing: 0.5px;
     }
     .player-title {
-        font-size: 1.15rem;
+        font-size: 1rem;
         font-weight: bold;
-        color: #1e1e1e;
+        color: #222222;
     }
 
-    /* イニング列ヘッダー（◇ ダイヤモンド付き） */
+    /* イニング列ヘッダー（◇ ダイヤモンド） */
     .inning-header {
         text-align: center;
-        background-color: #405d4e;
-        color: #ffffff;
+        background-color: #3b584a;
+        color: #ffffff !important;
         font-weight: bold;
-        font-size: 0.85rem;
-        padding: 3px 0;
+        font-size: 0.75rem;
+        padding: 2px 0;
         border-radius: 3px;
         margin-bottom: 4px;
-        letter-spacing: 1px;
+        letter-spacing: 0.5px;
     }
     .diamond-icon {
-        color: #f5c542;
-        font-size: 0.75rem;
+        color: #f1c40f;
+        font-size: 0.7rem;
         margin-right: 2px;
     }
 
@@ -98,13 +95,23 @@ def apply_custom_css():
     .sticky-mobile-viewer {
         position: -webkit-sticky;
         position: sticky;
-        top: 3.5rem;
+        top: 3.2rem;
         z-index: 99;
         background-color: #1a1a1a;
         padding: 6px;
         border-radius: 8px;
         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.4);
         margin-bottom: 10px;
+    }
+
+    /* スマホ画面でイニング選択肢の文字・余白をギュッと締める */
+    @media (max-width: 768px) {
+        .scorebook-paper {
+            padding: 8px 6px !important;
+        }
+        div[data-testid="column"] {
+            min-width: 0 !important;
+        }
     }
     </style>
     """, unsafe_allow_html=True)
@@ -166,7 +173,7 @@ def render_admin_view():
     # 右側：スコアブック用紙風エディタ
     with col_grid:
         st.markdown("#### 📋 早稲田式 打席マス目シート")
-        st.caption("選手タブを選び、スコア枠をポチポチ修正して「保存」を押してください。")
+        st.caption("選手タブを選び、スコア枠を修正して「保存」を押してください。")
 
         tab_labels = []
         for idx, player in enumerate(current_players):
@@ -185,7 +192,7 @@ def render_admin_view():
                 u_num_init = str(player.get("uniform_number", "")).strip()
                 p_name_init = str(player.get("player_name", "未登録")).strip()
 
-                # スコア用紙デザインのラッパー開始
+                # スコア用紙カード
                 st.markdown(f"""
                 <div class="scorebook-paper">
                     <div class="scorebook-player-header">
@@ -204,7 +211,7 @@ def render_admin_view():
                     rbi_val = stat_c1.number_input("打点 (RBI)", min_value=0, max_value=20, value=int(player.get("rbi", 0)), step=1, key=f"{selected_match_file}_rbi_{idx}")
                     sb_val = stat_c2.number_input("盗塁数 (SB)", min_value=0, max_value=20, value=int(player.get("stolen_bases", 0)), step=1, key=f"{selected_match_file}_sb_{idx}")
 
-                    st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px dashed #a89f91;'>", unsafe_allow_html=True)
+                    st.markdown("<hr style='margin: 8px 0; border: none; border-top: 1px dashed #9e9587;'>", unsafe_allow_html=True)
                     st.markdown("<div style='font-size:0.85rem; font-weight:bold; color:#4a3b32; margin-bottom:4px;'>【各回の打席結果（◇ダイヤモンド）】</div>", unsafe_allow_html=True)
 
                     inn_cols = st.columns(7)
@@ -241,7 +248,7 @@ def render_admin_view():
                         st.success(f"{p_name} 選手のスコアを記録しました！")
                         st.rerun()
 
-                st.markdown("</div>", unsafe_allow_html=True)  # scorebook-paper 終了
+                st.markdown("</div>", unsafe_allow_html=True)
 
             st.write("")
             if st.button("📊 全試合の成績を統合確定・Excelを作成する", type="primary", use_container_width=True):
