@@ -37,6 +37,7 @@ st.set_page_config(
     page_title="学童野球スコア集計＆デジタル選手名鑑",
     page_icon="⚾️",
     layout="wide",
+    initial_sidebar_state="expanded",  # ★サイドバーを常に開いた状態で初期化
 )
 
 # ----------------------------------------------------
@@ -48,6 +49,31 @@ st.markdown("""
 .stApp {
     background-color: #0f1f17 !important;
     color: #f0f4f1 !important;
+}
+
+/* ★ サイドバー開閉ボタン（左上の矢印）の視認性を最大化 */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stHeaderCollapseButton"],
+button[kind="header"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    color: #d4af37 !important;
+    background-color: #172d22 !important;
+    border: 1px solid #d4af37 !important;
+    border-radius: 6px !important;
+    padding: 4px !important;
+}
+[data-testid="stSidebarCollapseButton"]:hover,
+button[kind="header"]:hover {
+    background-color: #991b1b !important;
+    color: #ffffff !important;
+}
+
+/* サイドバー自体の背景色と境界線デザイン維持 */
+section[data-testid="stSidebar"] {
+    background-color: #0a1710 !important;
+    border-right: 2px solid #1f422e !important;
 }
 
 /* 2. スマホ上部メニューバーとの重なりを防ぐ上部スペース */
