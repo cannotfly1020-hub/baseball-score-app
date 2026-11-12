@@ -1,11 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AtBatGrid } from "@/components/scan/AtBatGrid";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
 import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
-import { dataUrlToBase64, processScorebookImage } from "@/lib/image-process";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  dataUrlToBase64,
+  processScorebookImage,
+  reprocessRedOnly,
+  type RedSensitivity,
+} from "@/lib/image-process";
 import { countNeedsReview, inferMatchResult } from "@/lib/stats";
 import type { AppData, MatchRecord, MatchType, PlayerAtBat } from "@/lib/types";
 
@@ -29,28 +35,66 @@ export function ScanTab({
   const [theirScore, setTheirScore] = useState(0);
   const [colorUrl, setColorUrl] = useState<string | null>(null);
   const [redUrl, setRedUrl] = useState<string | null>(null);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [redSensitivity, setRedSensitivity] = useState<RedSensitivity>(DEFAULT_RED_SENSITIVITY);
+  const [sensitivityBusy, setSensitivityBusy] = useState(false);
   const [players, setPlayers] = useState<PlayerAtBat[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [savedMatch, setSavedMatch] = useState<MatchRecord | null>(null);
+  const sensitivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextSensitivityEffect = useRef(false);
 
   const onFile = async (file: File) => {
     setStatus("画像を前処理中（長辺1600pxへ自動圧縮）…");
     setError("");
     setSavedMatch(null);
+    setSourceFile(file);
+    setRedSensitivity(DEFAULT_RED_SENSITIVITY);
+    skipNextSensitivityEffect.current = true;
     try {
-      const processed = await processScorebookImage(file);
+      const processed = await processScorebookImage(file, {
+        redSensitivity: DEFAULT_RED_SENSITIVITY,
+      });
       setColorUrl(processed.colorDataUrl);
       setRedUrl(processed.redDataUrl);
       setStatus(
-        `前処理完了（${processed.width}×${processed.height}）。AI解析を実行できます。`,
+        `前処理完了（${processed.width}×${processed.height}）。赤抽出感度を調整してからAI解析できます。`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "画像処理に失敗しました");
       setStatus("");
     }
   };
+
+  // 感度スライダー変更時に赤抽出だけ再処理（デバウンス）
+  useEffect(() => {
+    if (!sourceFile) return;
+    if (skipNextSensitivityEffect.current) {
+      skipNextSensitivityEffect.current = false;
+      return;
+    }
+    if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
+    setSensitivityBusy(true);
+    sensitivityTimer.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await reprocessRedOnly(sourceFile, redSensitivity);
+          setRedUrl(result.redDataUrl);
+          setStatus(`赤抽出を更新しました（感度 ${Math.round(redSensitivity)}）。`);
+          setError("");
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "赤抽出の再処理に失敗しました");
+        } finally {
+          setSensitivityBusy(false);
+        }
+      })();
+    }, 180);
+    return () => {
+      if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
+    };
+  }, [redSensitivity, sourceFile]);
 
   const analyze = async () => {
     if (!colorUrl || !redUrl) {
@@ -263,7 +307,13 @@ export function ScanTab({
         <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
           画像プレビュー
         </h3>
-        <ImagePreview colorUrl={colorUrl} redUrl={redUrl} />
+        <ImagePreview
+          colorUrl={colorUrl}
+          redUrl={redUrl}
+          redSensitivity={redSensitivity}
+          onRedSensitivityChange={setRedSensitivity}
+          sensitivityBusy={sensitivityBusy}
+        />
       </div>
 
       <div className="panel">
