@@ -54,9 +54,13 @@ function minBy<T>(arr: T[], fn: (x: T) => number): T | null {
 }
 
 export function tripleCrown(stats: PlayerStats[]) {
-  const eligible = stats.filter((s) => s.at_bats >= 5 || s.plate_appearances >= 5);
+  // 学童は試合数が少ないため、打席1以上でランキング表示する
+  const eligible = stats.filter((s) => s.plate_appearances >= 1 || s.rbi > 0 || s.stolen_bases > 0);
   return {
-    avg: maxBy(eligible.filter((s) => s.at_bats >= 5), (s) => s.avg),
+    avg: maxBy(
+      eligible.filter((s) => s.at_bats >= 1),
+      (s) => s.avg,
+    ),
     rbi: maxBy(eligible, (s) => s.rbi),
     sb: maxBy(eligible, (s) => s.stolen_bases),
   };
