@@ -83,7 +83,21 @@ export const TOTAL_BASES_VALUE: Partial<Record<ResultLabel, number>> = {
 
 export const INNING_KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;
 
-export const DEFAULT_GEMINI_MODEL = "gemini-3.8-flash";
+/** 安定・高速寄りの候補。先頭から試し、モデル未対応時は次へフォールバック */
+export const GEMINI_MODEL_CANDIDATES = [
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite",
+] as const;
+
+export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
+
+/** Canvas 前処理時の長辺上限（iPhone高画質対策） */
+export const IMAGE_MAX_SIDE = 1600;
+
+/** JPEG 出力品質（0–1） */
+export const IMAGE_JPEG_QUALITY = 0.82;
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 

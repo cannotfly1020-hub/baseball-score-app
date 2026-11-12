@@ -2,13 +2,24 @@
 
 import { Maximize2, Minimize2, RotateCw } from "lucide-react";
 import { useState } from "react";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  type RedSensitivity,
+  sensitivityLabel,
+} from "@/lib/image-process";
 
 export function ImagePreview({
   colorUrl,
   redUrl,
+  redSensitivity = DEFAULT_RED_SENSITIVITY,
+  onRedSensitivityChange,
+  sensitivityBusy = false,
 }: {
   colorUrl: string | null;
   redUrl: string | null;
+  redSensitivity?: RedSensitivity;
+  onRedSensitivityChange?: (value: RedSensitivity) => void;
+  sensitivityBusy?: boolean;
 }) {
   const [mode, setMode] = useState<"color" | "red">("color");
   const [zoom, setZoom] = useState(1);
@@ -53,9 +64,42 @@ export function ImagePreview({
         <img
           src={src}
           alt={mode === "color" ? "鮮鋭化カラー原本" : "赤色抽出画像"}
-          style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
+          style={{
+            transform: `scale(${zoom}) rotate(${rotation}deg)`,
+            opacity: mode === "red" && sensitivityBusy ? 0.55 : 1,
+          }}
         />
       </div>
+
+      {mode === "red" && onRedSensitivityChange ? (
+        <div className="sensitivity-panel">
+          <div className="sensitivity-header">
+            <span className="sensitivity-title">赤抽出の感度</span>
+            <span className="sensitivity-value">
+              {sensitivityLabel(redSensitivity)}（{Math.round(redSensitivity)}）
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={redSensitivity}
+            aria-label="赤抽出の感度"
+            onChange={(e) => onRedSensitivityChange(Number(e.target.value))}
+            className="sensitivity-slider"
+          />
+          <div className="sensitivity-labels">
+            <span>弱</span>
+            <span>標準</span>
+            <span>強</span>
+          </div>
+          <p className="muted" style={{ marginTop: 6, fontSize: "0.75rem" }}>
+            赤ペンが一番ハッキリ浮き出る位置に合わせてから「AI解析」を押してください。
+            {sensitivityBusy ? " 再処理中…" : ""}
+          </p>
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
         <button

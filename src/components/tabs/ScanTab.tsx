@@ -1,11 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AtBatGrid } from "@/components/scan/AtBatGrid";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
 import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
-import { dataUrlToBase64, processScorebookImage } from "@/lib/image-process";
+import {
+  DEFAULT_RED_SENSITIVITY,
+  dataUrlToBase64,
+  processScorebookImage,
+  reprocessRedOnly,
+  type RedSensitivity,
+} from "@/lib/image-process";
 import { countNeedsReview, inferMatchResult } from "@/lib/stats";
 import type { AppData, MatchRecord, MatchType, PlayerAtBat } from "@/lib/types";
 
@@ -29,28 +35,75 @@ export function ScanTab({
   const [theirScore, setTheirScore] = useState(0);
   const [colorUrl, setColorUrl] = useState<string | null>(null);
   const [redUrl, setRedUrl] = useState<string | null>(null);
+  const [sourceFile, setSourceFile] = useState<File | null>(null);
+  const [redSensitivity, setRedSensitivity] = useState<RedSensitivity>(DEFAULT_RED_SENSITIVITY);
+  const [sensitivityBusy, setSensitivityBusy] = useState(false);
   const [players, setPlayers] = useState<PlayerAtBat[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
   const [savedMatch, setSavedMatch] = useState<MatchRecord | null>(null);
+  const sensitivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextSensitivityEffect = useRef(false);
 
   const onFile = async (file: File) => {
-    setStatus("画像を前処理中…");
+    setStatus("画像を前処理中（長辺1600pxへ自動圧縮）…");
+    setError("");
     setSavedMatch(null);
+    setSourceFile(file);
+    setRedSensitivity(DEFAULT_RED_SENSITIVITY);
+    skipNextSensitivityEffect.current = true;
     try {
-      const processed = await processScorebookImage(file);
+      const processed = await processScorebookImage(file, {
+        redSensitivity: DEFAULT_RED_SENSITIVITY,
+      });
       setColorUrl(processed.colorDataUrl);
       setRedUrl(processed.redDataUrl);
-      setStatus("前処理完了。AI解析を実行できます。");
+      setStatus(
+        `前処理完了（${processed.width}×${processed.height}）。赤抽出感度を調整してからAI解析できます。`,
+      );
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "画像処理に失敗しました");
+      setError(err instanceof Error ? err.message : "画像処理に失敗しました");
+      setStatus("");
     }
   };
 
+  // 感度スライダー変更時に赤抽出だけ再処理（デバウンス）
+  useEffect(() => {
+    if (!sourceFile) return;
+    if (skipNextSensitivityEffect.current) {
+      skipNextSensitivityEffect.current = false;
+      return;
+    }
+    if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
+    setSensitivityBusy(true);
+    sensitivityTimer.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await reprocessRedOnly(sourceFile, redSensitivity);
+          setRedUrl(result.redDataUrl);
+          setStatus(`赤抽出を更新しました（感度 ${Math.round(redSensitivity)}）。`);
+          setError("");
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "赤抽出の再処理に失敗しました");
+        } finally {
+          setSensitivityBusy(false);
+        }
+      })();
+    }, 180);
+    return () => {
+      if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
+    };
+  }, [redSensitivity, sourceFile]);
+
   const analyze = async () => {
     if (!colorUrl || !redUrl) {
-      setStatus("先にスコアブック写真をアップロードしてください");
+      setError("先にスコアブック写真をアップロードしてください");
       return;
+    }
+    if (!data.settings.geminiApiKey?.trim()) {
+      // サーバー側の環境変数もあるため警告のみ。未設定ならサーバーが明確に返す
+      setStatus("APIキー未入力の場合はサーバー環境変数を使用します…");
     }
     if (!consentAccepted) {
       const ok = await onRequestConsent();
@@ -58,22 +111,45 @@ export function ScanTab({
     }
 
     setAnalyzing(true);
+    setError("");
     setStatus("Gemini で2段階解析中…（名簿 → 打席）");
     try {
+      const colorB64 = dataUrlToBase64(colorUrl);
+      const redB64 = dataUrlToBase64(redUrl);
+      const approxKb = Math.round(((colorB64.length + redB64.length) * 0.75) / 1024);
+      if (approxKb > 9000) {
+        setError(
+          `画像データが大きすぎます（約 ${approxKb}KB）。別の写真で撮り直してください。`,
+        );
+        setStatus("");
+        return;
+      }
+
       const res = await fetch("/api/analyze-score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          colorImageBase64: dataUrlToBase64(colorUrl),
-          redImageBase64: dataUrlToBase64(redUrl),
+          colorImageBase64: colorB64,
+          redImageBase64: redB64,
           mimeType: "image/jpeg",
           apiKey: data.settings.geminiApiKey || undefined,
           roster: data.roster,
           matchMeta: { match_date: matchDate, opponent },
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "解析に失敗しました");
+
+      let json: { error?: string; players?: PlayerAtBat[]; match_date?: string; opponent?: string; model?: string };
+      try {
+        json = await res.json();
+      } catch {
+        throw new Error(
+          `サーバー応答の解析に失敗しました (HTTP ${res.status})。画像が大きすぎるか、サーバーエラーの可能性があります。`,
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(json.error || `解析に失敗しました (HTTP ${res.status})`);
+      }
 
       setPlayers(json.players || []);
       if (json.match_date && json.match_date !== "-") setMatchDate(String(json.match_date).slice(0, 10));
@@ -83,13 +159,23 @@ export function ScanTab({
         (sum: number, p: PlayerAtBat) => sum + countNeedsReview(p),
         0,
       );
+      const modelNote = json.model ? `（${json.model}）` : "";
       setStatus(
         reviewCount > 0
-          ? `解析完了。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
-          : "解析完了。内容を確認して確定してください。",
+          ? `解析完了${modelNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
+          : `解析完了${modelNote}。内容を確認して確定してください。`,
       );
+      setError("");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "解析に失敗しました");
+      const message =
+        err instanceof TypeError
+          ? "通信エラーが発生しました。ネットワーク接続を確認するか、画像サイズを小さくして再試行してください。"
+          : err instanceof Error
+            ? err.message
+            : "解析に失敗しました";
+      setError(message);
+      setStatus("");
+      console.error("[ScanTab] analyze failed", err);
     } finally {
       setAnalyzing(false);
     }
@@ -97,7 +183,7 @@ export function ScanTab({
 
   const confirm = () => {
     if (players.length === 0) {
-      setStatus("確定する打席データがありません");
+      setError("確定する打席データがありません");
       return;
     }
     const match: MatchRecord = {
@@ -114,6 +200,7 @@ export function ScanTab({
     };
     onSaveMatch(match);
     setSavedMatch(match);
+    setError("");
     setStatus("試合を保存しました。ヒーローカードを共有できます。");
   };
 
@@ -207,6 +294,11 @@ export function ScanTab({
           </button>
         </div>
 
+        {error ? (
+          <div className="alert-error" role="alert">
+            {error}
+          </div>
+        ) : null}
         {status ? <p className="muted">{status}</p> : null}
       </div>
 
@@ -215,7 +307,13 @@ export function ScanTab({
         <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
           画像プレビュー
         </h3>
-        <ImagePreview colorUrl={colorUrl} redUrl={redUrl} />
+        <ImagePreview
+          colorUrl={colorUrl}
+          redUrl={redUrl}
+          redSensitivity={redSensitivity}
+          onRedSensitivityChange={setRedSensitivity}
+          sensitivityBusy={sensitivityBusy}
+        />
       </div>
 
       <div className="panel">
