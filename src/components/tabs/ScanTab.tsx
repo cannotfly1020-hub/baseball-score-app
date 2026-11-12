@@ -60,7 +60,7 @@ export function ScanTab({
       setColorUrl(processed.colorDataUrl);
       setRedUrl(processed.redDataUrl);
       setStatus(
-        `前処理完了（${processed.width}×${processed.height}）。赤抽出感度を調整してからAI解析できます。`,
+        `前処理完了（${processed.width}×${processed.height}）。赤強調感度を調整してからAI解析できます。`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "画像処理に失敗しました");
@@ -82,10 +82,10 @@ export function ScanTab({
         try {
           const result = await reprocessRedOnly(sourceFile, redSensitivity);
           setRedUrl(result.redDataUrl);
-          setStatus(`赤抽出を更新しました（感度 ${Math.round(redSensitivity)}）。`);
+          setStatus(`赤強調を更新しました（感度 ${Math.round(redSensitivity)}）。`);
           setError("");
         } catch (err) {
-          setError(err instanceof Error ? err.message : "赤抽出の再処理に失敗しました");
+          setError(err instanceof Error ? err.message : "赤強調の再処理に失敗しました");
         } finally {
           setSensitivityBusy(false);
         }

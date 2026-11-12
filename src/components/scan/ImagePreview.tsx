@@ -74,7 +74,7 @@ export function ImagePreview({
       {mode === "red" && onRedSensitivityChange ? (
         <div className="sensitivity-panel">
           <div className="sensitivity-header">
-            <span className="sensitivity-title">赤抽出の感度</span>
+            <span className="sensitivity-title">赤強調の感度</span>
             <span className="sensitivity-value">
               {sensitivityLabel(redSensitivity)}（{Math.round(redSensitivity)}）
             </span>
@@ -85,7 +85,7 @@ export function ImagePreview({
             max={100}
             step={1}
             value={redSensitivity}
-            aria-label="赤抽出の感度"
+            aria-label="赤強調の感度"
             onChange={(e) => onRedSensitivityChange(Number(e.target.value))}
             className="sensitivity-slider"
           />
@@ -95,7 +95,7 @@ export function ImagePreview({
             <span>強</span>
           </div>
           <p className="muted" style={{ marginTop: 6, fontSize: "0.75rem" }}>
-            赤ペンが一番ハッキリ浮き出る位置に合わせてから「AI解析」を押してください。
+            枠線は残したまま赤ペン（黒い菱形上の暗い赤茶色含む）を強調します。一番クッキリする感度にしてから「AI解析」を押してください。
             {sensitivityBusy ? " 再処理中…" : ""}
           </p>
         </div>
