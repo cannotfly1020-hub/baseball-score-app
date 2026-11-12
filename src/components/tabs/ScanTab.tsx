@@ -32,25 +32,34 @@ export function ScanTab({
   const [players, setPlayers] = useState<PlayerAtBat[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
+  const [error, setError] = useState("");
   const [savedMatch, setSavedMatch] = useState<MatchRecord | null>(null);
 
   const onFile = async (file: File) => {
-    setStatus("画像を前処理中…");
+    setStatus("画像を前処理中（長辺1600pxへ自動圧縮）…");
+    setError("");
     setSavedMatch(null);
     try {
       const processed = await processScorebookImage(file);
       setColorUrl(processed.colorDataUrl);
       setRedUrl(processed.redDataUrl);
-      setStatus("前処理完了。AI解析を実行できます。");
+      setStatus(
+        `前処理完了（${processed.width}×${processed.height}）。AI解析を実行できます。`,
+      );
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "画像処理に失敗しました");
+      setError(err instanceof Error ? err.message : "画像処理に失敗しました");
+      setStatus("");
     }
   };
 
   const analyze = async () => {
     if (!colorUrl || !redUrl) {
-      setStatus("先にスコアブック写真をアップロードしてください");
+      setError("先にスコアブック写真をアップロードしてください");
       return;
+    }
+    if (!data.settings.geminiApiKey?.trim()) {
+      // サーバー側の環境変数もあるため警告のみ。未設定ならサーバーが明確に返す
+      setStatus("APIキー未入力の場合はサーバー環境変数を使用します…");
     }
     if (!consentAccepted) {
       const ok = await onRequestConsent();
@@ -58,22 +67,45 @@ export function ScanTab({
     }
 
     setAnalyzing(true);
+    setError("");
     setStatus("Gemini で2段階解析中…（名簿 → 打席）");
     try {
+      const colorB64 = dataUrlToBase64(colorUrl);
+      const redB64 = dataUrlToBase64(redUrl);
+      const approxKb = Math.round(((colorB64.length + redB64.length) * 0.75) / 1024);
+      if (approxKb > 9000) {
+        setError(
+          `画像データが大きすぎます（約 ${approxKb}KB）。別の写真で撮り直してください。`,
+        );
+        setStatus("");
+        return;
+      }
+
       const res = await fetch("/api/analyze-score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          colorImageBase64: dataUrlToBase64(colorUrl),
-          redImageBase64: dataUrlToBase64(redUrl),
+          colorImageBase64: colorB64,
+          redImageBase64: redB64,
           mimeType: "image/jpeg",
           apiKey: data.settings.geminiApiKey || undefined,
           roster: data.roster,
           matchMeta: { match_date: matchDate, opponent },
         }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error || "解析に失敗しました");
+
+      let json: { error?: string; players?: PlayerAtBat[]; match_date?: string; opponent?: string; model?: string };
+      try {
+        json = await res.json();
+      } catch {
+        throw new Error(
+          `サーバー応答の解析に失敗しました (HTTP ${res.status})。画像が大きすぎるか、サーバーエラーの可能性があります。`,
+        );
+      }
+
+      if (!res.ok) {
+        throw new Error(json.error || `解析に失敗しました (HTTP ${res.status})`);
+      }
 
       setPlayers(json.players || []);
       if (json.match_date && json.match_date !== "-") setMatchDate(String(json.match_date).slice(0, 10));
@@ -83,13 +115,23 @@ export function ScanTab({
         (sum: number, p: PlayerAtBat) => sum + countNeedsReview(p),
         0,
       );
+      const modelNote = json.model ? `（${json.model}）` : "";
       setStatus(
         reviewCount > 0
-          ? `解析完了。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
-          : "解析完了。内容を確認して確定してください。",
+          ? `解析完了${modelNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
+          : `解析完了${modelNote}。内容を確認して確定してください。`,
       );
+      setError("");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "解析に失敗しました");
+      const message =
+        err instanceof TypeError
+          ? "通信エラーが発生しました。ネットワーク接続を確認するか、画像サイズを小さくして再試行してください。"
+          : err instanceof Error
+            ? err.message
+            : "解析に失敗しました";
+      setError(message);
+      setStatus("");
+      console.error("[ScanTab] analyze failed", err);
     } finally {
       setAnalyzing(false);
     }
@@ -97,7 +139,7 @@ export function ScanTab({
 
   const confirm = () => {
     if (players.length === 0) {
-      setStatus("確定する打席データがありません");
+      setError("確定する打席データがありません");
       return;
     }
     const match: MatchRecord = {
@@ -114,6 +156,7 @@ export function ScanTab({
     };
     onSaveMatch(match);
     setSavedMatch(match);
+    setError("");
     setStatus("試合を保存しました。ヒーローカードを共有できます。");
   };
 
@@ -207,6 +250,11 @@ export function ScanTab({
           </button>
         </div>
 
+        {error ? (
+          <div className="alert-error" role="alert">
+            {error}
+          </div>
+        ) : null}
         {status ? <p className="muted">{status}</p> : null}
       </div>
 

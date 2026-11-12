@@ -4,6 +4,8 @@
  * 2) 赤色抽出フィルター画像
  */
 
+import { IMAGE_JPEG_QUALITY, IMAGE_MAX_SIDE } from "./constants";
+
 export interface ProcessedImages {
   colorDataUrl: string;
   redDataUrl: string;
@@ -115,7 +117,7 @@ function clamp(n: number): number {
 }
 
 /** 長辺を maxSide にリサイズ（API送信サイズ抑制） */
-function fitSize(w: number, h: number, maxSide = 2048) {
+function fitSize(w: number, h: number, maxSide = IMAGE_MAX_SIDE) {
   const side = Math.max(w, h);
   if (side <= maxSide) return { width: w, height: h };
   const scale = maxSide / side;
@@ -124,14 +126,15 @@ function fitSize(w: number, h: number, maxSide = 2048) {
 
 export async function processScorebookImage(
   source: File | Blob | string,
-  options?: { maxSide?: number; rotationDeg?: number },
+  options?: { maxSide?: number; rotationDeg?: number; jpegQuality?: number },
 ): Promise<ProcessedImages> {
   const img = await loadImage(source);
   const rotation = ((options?.rotationDeg ?? 0) % 360 + 360) % 360;
   const swapped = rotation === 90 || rotation === 270;
   const naturalW = swapped ? img.naturalHeight : img.naturalWidth;
   const naturalH = swapped ? img.naturalWidth : img.naturalHeight;
-  const { width, height } = fitSize(naturalW, naturalH, options?.maxSide ?? 2048);
+  const { width, height } = fitSize(naturalW, naturalH, options?.maxSide ?? IMAGE_MAX_SIDE);
+  const jpegQuality = options?.jpegQuality ?? IMAGE_JPEG_QUALITY;
 
   const { canvas, ctx } = createCanvas(width, height);
   ctx.save();
@@ -169,8 +172,8 @@ export async function processScorebookImage(
   redCtx.putImageData(redData, 0, 0);
 
   return {
-    colorDataUrl: colorCanvas.toDataURL("image/jpeg", 0.92),
-    redDataUrl: redCanvas.toDataURL("image/jpeg", 0.92),
+    colorDataUrl: colorCanvas.toDataURL("image/jpeg", jpegQuality),
+    redDataUrl: redCanvas.toDataURL("image/jpeg", jpegQuality),
     width,
     height,
   };
