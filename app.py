@@ -255,8 +255,8 @@ with st.sidebar:
     model_name = st.selectbox(
         "Gemini モデル",
         options=DEFAULT_GEMINI_MODELS,
-        index=0,
-        help="利用可能な Flash 系モデルを選択",
+        index=0,  # 先頭 = gemini-3.8-flash（constants.DEFAULT_GEMINI_MODELS）
+        help="Gemini 3 系 Flash を選択（既定: gemini-3.8-flash）",
     )
     st.caption(f"名簿ファイル: `{ROSTER_PATH.name}`（{len(st.session_state.team_roster)} 名）")
     st.divider()

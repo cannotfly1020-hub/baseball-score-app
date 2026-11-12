@@ -115,12 +115,13 @@ OBP_SF = "犠飛"
 
 INNING_KEYS = ("1", "2", "3", "4", "5", "6", "7")
 
+# デフォルト先頭 = サイドバーの初期選択。利用不可になったら先頭を差し替える。
 DEFAULT_GEMINI_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.5-flash-lite",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3-flash",
+    "gemini-3.8-flash-lite",
     "gemini-flash-latest",
-    "gemini-1.5-flash",
 ]
 
 
