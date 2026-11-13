@@ -5,8 +5,11 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   experimental: {
-    // 高解像度スコアブック写真2枚（base64）の送信に余裕を持たせる
-    proxyClientMaxBodySize: "32mb",
+    // スコアブック画像（base64）の送受信に余裕を持たせる
+    proxyClientMaxBodySize: "50mb",
+    serverActions: {
+      bodySizeLimit: "50mb",
+    },
   },
   turbopack: {
     rules: {

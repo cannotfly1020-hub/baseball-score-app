@@ -11,9 +11,16 @@ import { makeOverviewThumb, sliceBattingRows } from "@/lib/row-slice";
 import { normalizePlayerRecord } from "@/lib/stats";
 import type { AnalyzeRequestBody, PlayerAtBat, RosterPlayer } from "@/lib/types";
 
+/** Vercel / Node 上で長時間の多段 Gemini 呼び出しが切れないようにする */
+export const maxDuration = 60;
+
 type ContentPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } };
+
+function stripDataUrl(input?: string): string {
+  return (input || "").replace(/^data:image\/\w+;base64,/, "");
+}
 
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
@@ -187,8 +194,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const colorImageBase64 = body.colorImageBase64?.replace(/^data:image\/\w+;base64,/, "");
-    const redImageBase64 = body.redImageBase64?.replace(/^data:image\/\w+;base64,/, "");
+    const colorImageBase64 = stripDataUrl(body.colorImageBase64);
+    const redImageBase64 = stripDataUrl(body.redImageBase64);
     if (!colorImageBase64 || !redImageBase64) {
       return NextResponse.json(
         { error: "画像が不足しています。先にスコアブック写真を選択してください。" },
@@ -196,10 +203,25 @@ export async function POST(request: Request) {
       );
     }
 
-    const totalChars = colorImageBase64.length + redImageBase64.length;
-    if (totalChars > 20_000_000) {
+    const colorTop = stripDataUrl(body.colorTopImageBase64);
+    const colorBottom = stripDataUrl(body.colorBottomImageBase64);
+    const redTop = stripDataUrl(body.redTopImageBase64);
+    const redBottom = stripDataUrl(body.redBottomImageBase64);
+    const hasHalves = Boolean(colorTop && colorBottom && redTop && redBottom);
+
+    const totalChars =
+      colorImageBase64.length +
+      redImageBase64.length +
+      colorTop.length +
+      colorBottom.length +
+      redTop.length +
+      redBottom.length;
+    // base64 文字数 ≈ バイト×4/3。5MB超は拒否（クライアントは3MB目標）
+    if (totalChars > 7_000_000) {
       return NextResponse.json(
-        { error: "画像データが大きすぎます。別アングルで撮り直すか、解像度を下げてください。" },
+        {
+          error: `画像データが大きすぎます（base64合計 ${(totalChars / 1_000_000).toFixed(1)}M文字）。長辺1800px・合計3MB以内に圧縮して再送してください。`,
+        },
         { status: 413 },
       );
     }
@@ -220,22 +242,27 @@ export async function POST(request: Request) {
     const ai = new GoogleGenAI({ apiKey });
     const candidateCache: { list?: string[] } = {};
 
-    // Step 1: 全体俯瞰で名簿抽出
-    const step1 = await generateWithFallback(
-      ai,
-      [
-        { text: buildRosterPrompt(roster) },
-        {
-          text: "【全体原本】左端の打順・背番号・選手名の抽出用（高解像度カラー原本）。",
-        },
-        { inlineData: { mimeType, data: colorImageBase64 } },
-        {
-          text: "【全体赤強調】位置合わせの参考。名簿抽出は原本を優先すること。",
-        },
-        { inlineData: { mimeType, data: redImageBase64 } },
-      ],
-      { candidateCache },
-    );
+    // Step 1: 全体俯瞰で名簿抽出（必要時は上下分割も参考に渡す）
+    const step1Parts: ContentPart[] = [
+      { text: buildRosterPrompt(roster) },
+      {
+        text: "【全体原本】左端の打順・背番号・選手名の抽出用（カラー原本）。",
+      },
+      { inlineData: { mimeType, data: colorImageBase64 } },
+      {
+        text: "【全体赤強調】位置合わせの参考。名簿抽出は原本を優先すること。",
+      },
+      { inlineData: { mimeType, data: redImageBase64 } },
+    ];
+    if (hasHalves) {
+      step1Parts.push(
+        { text: "【上半分・原本】上側の打順行の選手名確認用。" },
+        { inlineData: { mimeType, data: colorTop } },
+        { text: "【下半分・原本】下側の打順行の選手名確認用。" },
+        { inlineData: { mimeType, data: colorBottom } },
+      );
+    }
+    const step1 = await generateWithFallback(ai, step1Parts, { candidateCache });
 
     const rosterExtracted = applyRosterMatching(
       step1.parsed.map((row) => {
@@ -250,12 +277,20 @@ export async function POST(request: Request) {
       roster,
     );
 
-    // 俯瞰サムネ＋打順行スライスを作成
+    // 俯瞰サムネ＋打順行スライスを作成（送信画像は既に ≤1800px のため拡大は控えめ）
     const [colorThumb, redThumb, colorRows, redRows] = await Promise.all([
-      makeOverviewThumb(colorImageBase64, 1400),
-      makeOverviewThumb(redImageBase64, 1400),
-      sliceBattingRows(colorImageBase64, { rowCount: BATTING_ROW_COUNT }),
-      sliceBattingRows(redImageBase64, { rowCount: BATTING_ROW_COUNT }),
+      makeOverviewThumb(colorImageBase64, 1200),
+      makeOverviewThumb(redImageBase64, 1200),
+      sliceBattingRows(colorImageBase64, {
+        rowCount: BATTING_ROW_COUNT,
+        scale: 1.6,
+        jpegQuality: 85,
+      }),
+      sliceBattingRows(redImageBase64, {
+        rowCount: BATTING_ROW_COUNT,
+        scale: 1.6,
+        jpegQuality: 85,
+      }),
     ]);
 
     // Step 2: 打順ごと（横1行）の拡大解析

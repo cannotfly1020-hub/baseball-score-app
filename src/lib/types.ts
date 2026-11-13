@@ -102,6 +102,12 @@ export interface PlayerStats {
 export interface AnalyzeRequestBody {
   colorImageBase64: string;
   redImageBase64: string;
+  /** 必要時のみ: 上下2分割（原本） */
+  colorTopImageBase64?: string;
+  colorBottomImageBase64?: string;
+  /** 必要時のみ: 上下2分割（赤強調） */
+  redTopImageBase64?: string;
+  redBottomImageBase64?: string;
   mimeType?: string;
   apiKey?: string;
   roster: RosterPlayer[];

@@ -1,17 +1,38 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
- * 1) 加工なし高解像度カラー原本（リサイズのみ・黒文字判読用）
+ * 1) 加工なしカラー原本（長辺 ≤1800px・リサイズのみ）
  * 2) 線の細さ・筆圧の濃淡を保ったまま、赤みのある画素の G/B だけを
  *    引き下げて彩度を自然に上げた解析用画像（単色ベタ塗り・膨張なし）
+ * 解析送信時は prepareAnalyzeImages で合計 ≤3MB に圧縮する。
  */
 
-import { IMAGE_JPEG_QUALITY, IMAGE_MAX_SIDE } from "./constants";
+import {
+  ANALYZE_MAX_PAYLOAD_BYTES,
+  IMAGE_JPEG_QUALITY,
+  IMAGE_MAX_SIDE,
+} from "./constants";
 
 export interface ProcessedImages {
   colorDataUrl: string;
   redDataUrl: string;
   width: number;
   height: number;
+}
+
+/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 3MB） */
+export interface AnalyzeImagePayload {
+  colorDataUrl: string;
+  redDataUrl: string;
+  /** 必要時のみ: 上下2分割（原本） */
+  colorTopDataUrl?: string;
+  colorBottomDataUrl?: string;
+  /** 必要時のみ: 上下2分割（赤強調） */
+  redTopDataUrl?: string;
+  redBottomDataUrl?: string;
+  approxBytes: number;
+  maxSide: number;
+  jpegQuality: number;
+  splitHalves: boolean;
 }
 
 /** 感度 0（加工なし）〜 100（最大強調）。赤が浮かび黒文字も潰れない初期値 */
@@ -188,6 +209,137 @@ export async function reprocessRedOnly(
 export function dataUrlToBase64(dataUrl: string): string {
   const idx = dataUrl.indexOf(",");
   return idx >= 0 ? dataUrl.slice(idx + 1) : dataUrl;
+}
+
+/** base64（data URL可）から概算バイト数 */
+export function approxDecodedBytes(...parts: string[]): number {
+  let chars = 0;
+  for (const p of parts) {
+    if (!p) continue;
+    chars += dataUrlToBase64(p).length;
+  }
+  return Math.round(chars * 0.75);
+}
+
+async function reencodeDataUrl(
+  dataUrl: string,
+  maxSide: number,
+  jpegQuality: number,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const { canvas, width, height } = await drawSourceToCanvas(dataUrl, { maxSide });
+  return {
+    dataUrl: canvas.toDataURL("image/jpeg", jpegQuality),
+    width,
+    height,
+  };
+}
+
+async function splitVerticalHalves(
+  dataUrl: string,
+  jpegQuality: number,
+): Promise<{ top: string; bottom: string }> {
+  const img = await loadImage(dataUrl);
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const mid = Math.floor(h / 2);
+  const overlap = Math.round(h * 0.04); // 境界の打順行が切れないよう少し重ねる
+
+  const topH = Math.min(h, mid + overlap);
+  const bottomTop = Math.max(0, mid - overlap);
+  const bottomH = h - bottomTop;
+
+  const topCanvas = createCanvas(w, topH);
+  topCanvas.ctx.drawImage(img, 0, 0, w, topH, 0, 0, w, topH);
+
+  const bottomCanvas = createCanvas(w, bottomH);
+  bottomCanvas.ctx.drawImage(img, 0, bottomTop, w, bottomH, 0, 0, w, bottomH);
+
+  return {
+    top: topCanvas.canvas.toDataURL("image/jpeg", jpegQuality),
+    bottom: bottomCanvas.canvas.toDataURL("image/jpeg", jpegQuality),
+  };
+}
+
+/**
+ * AI解析用に原本＋赤強調を長辺1800 / JPEG0.85へ整え、
+ * 合計サイズが 3MB を超える場合は品質・解像度を下げ、
+ * なお大きい場合のみ上下2分割を付与する（それ以上は分割しない）。
+ */
+export async function prepareAnalyzeImages(
+  colorDataUrl: string,
+  redDataUrl: string,
+  options?: { maxBytes?: number },
+): Promise<AnalyzeImagePayload> {
+  const maxBytes = options?.maxBytes ?? ANALYZE_MAX_PAYLOAD_BYTES;
+  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.65, 0.55];
+  const sideSteps = [IMAGE_MAX_SIDE, 1600, 1400, 1200];
+
+  let best: AnalyzeImagePayload | null = null;
+
+  for (const maxSide of sideSteps) {
+    for (const jpegQuality of qualitySteps) {
+      const color = await reencodeDataUrl(colorDataUrl, maxSide, jpegQuality);
+      const red = await reencodeDataUrl(redDataUrl, maxSide, jpegQuality);
+      const approxBytes = approxDecodedBytes(color.dataUrl, red.dataUrl);
+      best = {
+        colorDataUrl: color.dataUrl,
+        redDataUrl: red.dataUrl,
+        approxBytes,
+        maxSide,
+        jpegQuality,
+        splitHalves: false,
+      };
+      if (approxBytes <= maxBytes) {
+        return best;
+      }
+    }
+  }
+
+  // それでも超える場合: 上下2分割を付与しつつ本体はさらに圧縮した2枚を送る
+  const fallbackQuality = 0.55;
+  const fallbackSide = 1200;
+  const color = await reencodeDataUrl(colorDataUrl, fallbackSide, fallbackQuality);
+  const red = await reencodeDataUrl(redDataUrl, fallbackSide, fallbackQuality);
+  const colorHalves = await splitVerticalHalves(color.dataUrl, fallbackQuality);
+  const redHalves = await splitVerticalHalves(red.dataUrl, fallbackQuality);
+
+  let payload: AnalyzeImagePayload = {
+    colorDataUrl: color.dataUrl,
+    redDataUrl: red.dataUrl,
+    colorTopDataUrl: colorHalves.top,
+    colorBottomDataUrl: colorHalves.bottom,
+    redTopDataUrl: redHalves.top,
+    redBottomDataUrl: redHalves.bottom,
+    approxBytes: 0,
+    maxSide: fallbackSide,
+    jpegQuality: fallbackQuality,
+    splitHalves: true,
+  };
+
+  payload.approxBytes = approxDecodedBytes(
+    payload.colorDataUrl,
+    payload.redDataUrl,
+    payload.colorTopDataUrl || "",
+    payload.colorBottomDataUrl || "",
+    payload.redTopDataUrl || "",
+    payload.redBottomDataUrl || "",
+  );
+
+  // 分割込みでも超える場合は分割を捨てて2枚のみさらに圧縮
+  if (payload.approxBytes > maxBytes) {
+    const tinyColor = await reencodeDataUrl(colorDataUrl, 1000, 0.5);
+    const tinyRed = await reencodeDataUrl(redDataUrl, 1000, 0.5);
+    payload = {
+      colorDataUrl: tinyColor.dataUrl,
+      redDataUrl: tinyRed.dataUrl,
+      approxBytes: approxDecodedBytes(tinyColor.dataUrl, tinyRed.dataUrl),
+      maxSide: 1000,
+      jpegQuality: 0.5,
+      splitHalves: false,
+    };
+  }
+
+  return payload;
 }
 
 export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string> {

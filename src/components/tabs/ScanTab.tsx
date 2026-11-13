@@ -8,6 +8,7 @@ import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
 import {
   DEFAULT_RED_SENSITIVITY,
   dataUrlToBase64,
+  prepareAnalyzeImages,
   processScorebookImage,
   reprocessRedOnly,
   type RedSensitivity,
@@ -47,7 +48,7 @@ export function ScanTab({
   const skipNextSensitivityEffect = useRef(false);
 
   const onFile = async (file: File) => {
-    setStatus("画像を前処理中（長辺2500px・高解像度）…");
+    setStatus("画像を前処理中（長辺1800px）…");
     setError("");
     setSavedMatch(null);
     setSourceFile(file);
@@ -112,43 +113,76 @@ export function ScanTab({
 
     setAnalyzing(true);
     setError("");
-    setStatus("Gemini で解析中…（名簿 → 打順ごと拡大読取）");
+    setStatus("画像を圧縮して送信準備中…");
     try {
-      const colorB64 = dataUrlToBase64(colorUrl);
-      const redB64 = dataUrlToBase64(redUrl);
-      const approxKb = Math.round(((colorB64.length + redB64.length) * 0.75) / 1024);
-      if (approxKb > 14000) {
+      const prepared = await prepareAnalyzeImages(colorUrl, redUrl);
+      const colorB64 = dataUrlToBase64(prepared.colorDataUrl);
+      const redB64 = dataUrlToBase64(prepared.redDataUrl);
+      const approxMb = (prepared.approxBytes / (1024 * 1024)).toFixed(2);
+
+      if (prepared.approxBytes > 3 * 1024 * 1024) {
         setError(
-          `画像データが大きすぎます（約 ${approxKb}KB）。別の写真で撮り直してください。`,
+          `画像データが大きすぎます（約 ${approxMb}MB / 上限3MB）。別の写真で撮り直してください。`,
         );
         setStatus("");
         return;
       }
 
-      const res = await fetch("/api/analyze-score", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          colorImageBase64: colorB64,
-          redImageBase64: redB64,
-          mimeType: "image/jpeg",
-          apiKey: data.settings.geminiApiKey || undefined,
-          roster: data.roster,
-          matchMeta: { match_date: matchDate, opponent },
-        }),
-      });
+      setStatus(
+        `Gemini で解析中…（約 ${approxMb}MB / ${prepared.maxSide}px${prepared.splitHalves ? "・上下分割あり" : ""}）`,
+      );
 
-      let json: { error?: string; players?: PlayerAtBat[]; match_date?: string; opponent?: string; model?: string };
+      const body: Record<string, unknown> = {
+        colorImageBase64: colorB64,
+        redImageBase64: redB64,
+        mimeType: "image/jpeg",
+        apiKey: data.settings.geminiApiKey || undefined,
+        roster: data.roster,
+        matchMeta: { match_date: matchDate, opponent },
+      };
+      if (prepared.splitHalves) {
+        body.colorTopImageBase64 = dataUrlToBase64(prepared.colorTopDataUrl || "");
+        body.colorBottomImageBase64 = dataUrlToBase64(prepared.colorBottomDataUrl || "");
+        body.redTopImageBase64 = dataUrlToBase64(prepared.redTopDataUrl || "");
+        body.redBottomImageBase64 = dataUrlToBase64(prepared.redBottomDataUrl || "");
+      }
+
+      let res: Response;
       try {
-        json = await res.json();
+        res = await fetch("/api/analyze-score", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (fetchErr) {
+        const detail =
+          fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+        throw new Error(
+          `通信エラーが発生しました（${detail}）。ネットワーク接続を確認するか、画像サイズを小さくして再試行してください。`,
+        );
+      }
+
+      const rawText = await res.text();
+      let json: {
+        error?: string;
+        players?: PlayerAtBat[];
+        match_date?: string;
+        opponent?: string;
+        model?: string;
+      };
+      try {
+        json = rawText ? (JSON.parse(rawText) as typeof json) : {};
       } catch {
         throw new Error(
-          `サーバー応答の解析に失敗しました (HTTP ${res.status})。画像が大きすぎるか、サーバーエラーの可能性があります。`,
+          `サーバー応答の解析に失敗しました (HTTP ${res.status})。本文: ${rawText.slice(0, 200) || "(空)"}`,
         );
       }
 
       if (!res.ok) {
-        throw new Error(json.error || `解析に失敗しました (HTTP ${res.status})`);
+        throw new Error(
+          json.error ||
+            `解析に失敗しました (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""})`,
+        );
       }
 
       setPlayers(json.players || []);
@@ -168,11 +202,7 @@ export function ScanTab({
       setError("");
     } catch (err) {
       const message =
-        err instanceof TypeError
-          ? "通信エラーが発生しました。ネットワーク接続を確認するか、画像サイズを小さくして再試行してください。"
-          : err instanceof Error
-            ? err.message
-            : "解析に失敗しました";
+        err instanceof Error ? err.message : `解析に失敗しました（${String(err)}）`;
       setError(message);
       setStatus("");
       console.error("[ScanTab] analyze failed", err);
