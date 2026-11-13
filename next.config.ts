@@ -4,7 +4,8 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
-  allowedDevOrigins: ["127.0.0.1"],
+  // 127.0.0.1 / localhost からの HMR を許可（未設定だとハイドレーションが「読み込み中」で止まる）
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
   experimental: {
     // FormData 画像送信 + 長時間 Gemini 解析
     proxyClientMaxBodySize: "50mb",
