@@ -170,7 +170,10 @@ ${rosterJson}
 
 ### 括弧書き数字「(数字)」は進塁責任打者なので無視する。
 
-### 出力フォーマット（指定のJSON配列のみ返却）
+### 出力フォーマット（指定のJSON配列のみ返却・説明文禁止）
+- \`innings\` は必ず "1"〜"7" の全キーを順番通り出力（空白は "なし"。省略・スパース禁止）。
+- \`reason\` / \`analysis\` / \`highlight\` / 長文メモは出力しない。
+- 低確信度マスは結果を "要確認" とし、必要なら \`note\` を10文字以内のみ可。
 inningsの値には必ず次の公式ラベルのいずれかのみを使用:
 ${OFFICIAL_LABELS_CSV}
 [
@@ -191,8 +194,7 @@ ${OFFICIAL_LABELS_CSV}
       "5": "なし",
       "6": "なし",
       "7": "なし"
-    },
-    "highlight": "初回先頭打者安打と盗塁"
+    }
   }
 ]
 `.trim();
@@ -200,6 +202,7 @@ ${OFFICIAL_LABELS_CSV}
 
 /**
  * 打順グループ（上下半分）の精密読取プロンプト。
+ * グリッド（全打順・innings 1〜7）は維持。冗長な説明文と空 cell_meta のみ削減。
  */
 export function buildGroupDetailsPrompt(args: {
   fromOrder: number;
@@ -263,10 +266,15 @@ K/KC=三振, B/BB/四=四球, 死/DB=死球, WP=振り逃げ, E=敵失, FC=野�
 - イニング縦列の ●/〇 個数 = inning_scores のその回
 - 生還を生んだ打者の cell_meta.rbi を割り振る（WP/PB/E のみの生還は打点0）
 
-### 【絶対厳守】
-- 行ごとに左→右（1〜7回）。空白は "なし"。列の左詰め禁止。
+### 【絶対厳守・グリッド構造】
+- 行ごとに左→右（1〜7回）。\`innings\` は必ず "1"〜"7" 全キーを順番通り出力。空白は "なし"。省略・スパース禁止（座標ズレ防止）。
 - 曖昧・かすれ・重なりは必ず "要確認"（推測禁止）。
 - 選手名は名簿の最も近い登録名へ補正。判読不能なら「未登録」。
+
+### 出力トークン削減（読み取りロジックは変更しない）
+- \`reason\` / \`analysis\` / \`highlight\` / 長文の日本語説明は**一切出力しない**。
+- \`cell_meta\` は **scored:true または rbi>0 または run_mark があるイニングだけ** を書く（空の false/0/"" エントリは書かない）。
+- 低確信度マスは結果 "要確認"。任意の \`note\` は10文字以内のみ可（通常は省略）。
 
 ### 出力フォーマット（JSONオブジェクト1つのみ）
 inningsの値は次のいずれかのみ:
@@ -291,15 +299,8 @@ ${OFFICIAL_LABELS_CSV}
         "7": "なし"
       },
       "cell_meta": {
-        "1": { "scored": true, "run_mark": "filled", "rbi": 0 },
-        "2": { "scored": false, "run_mark": "", "rbi": 0 },
-        "3": { "scored": false, "run_mark": "", "rbi": 0 },
-        "4": { "scored": false, "run_mark": "", "rbi": 0 },
-        "5": { "scored": false, "run_mark": "", "rbi": 0 },
-        "6": { "scored": false, "run_mark": "", "rbi": 0 },
-        "7": { "scored": false, "run_mark": "", "rbi": 0 }
-      },
-      "highlight": ""
+        "1": { "scored": true, "run_mark": "filled", "rbi": 0 }
+      }
     }
   ]
 }

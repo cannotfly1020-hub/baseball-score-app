@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { MatchMetaForm } from "@/components/scan/MatchMetaForm";
 import { MatchReviewPanel } from "@/components/scan/MatchReviewPanel";
@@ -20,6 +20,25 @@ import type { AnalyzePageHint } from "@/lib/image-process";
 import { mergeScorebookPages } from "@/lib/page-merge";
 import { countNeedsReview } from "@/lib/stats";
 import type { AppData, MatchRecord } from "@/lib/types";
+
+const STAGE_LABELS: Record<string, string> = {
+  starting: "ジョブ開始",
+  roster: "出場選手の名簿抽出",
+  upper: "打順1〜5番の精密読取",
+  lower: "打順6〜9番の精密読取",
+  done: "完了処理",
+};
+
+function formatAnalyzeStage(raw: string): string {
+  const key = raw.trim().toLowerCase();
+  if (!key) return "";
+  if (STAGE_LABELS[key]) return STAGE_LABELS[key];
+  // poll status may include Japanese already
+  if (/名簿|roster/i.test(raw)) return STAGE_LABELS.roster;
+  if (/upper|1.?5|上/i.test(raw)) return STAGE_LABELS.upper;
+  if (/lower|6.?9|下/i.test(raw)) return STAGE_LABELS.lower;
+  return raw;
+}
 
 /**
  * スコア読取タブのオーケストレータ。
@@ -43,11 +62,46 @@ export function ScanTab({
   onOpenHistory?: () => void;
 }) {
   const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeElapsedSec, setAnalyzeElapsedSec] = useState(0);
+  const [analyzeStage, setAnalyzeStage] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [usageMeta, setUsageMeta] = useState<AnalyzeUsageMeta | null>(null);
   const [photoCompareOpen, setPhotoCompareOpen] = useState(false);
   const [toast, setToast] = useState("");
+
+  useEffect(() => {
+    if (!analyzing) {
+      setAnalyzeElapsedSec(0);
+      return;
+    }
+    const started = Date.now();
+    setAnalyzeElapsedSec(0);
+    const id = window.setInterval(() => {
+      setAnalyzeElapsedSec(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [analyzing]);
+
+  const reportStatus = (message: string) => {
+    setStatus(message);
+    // "…（roster・12s・…）" / "stage=upper" 風の進行を拾う
+    const stageMatch =
+      message.match(/（([^・（）]+)・/) ||
+      message.match(/\b(roster|upper|lower|starting|done)\b/i) ||
+      message.match(/進行[:：]\s*([^\s。]+)/);
+    if (stageMatch?.[1]) {
+      setAnalyzeStage(formatAnalyzeStage(stageMatch[1]));
+    } else if (/名簿|出場選手/.test(message)) {
+      setAnalyzeStage(STAGE_LABELS.roster);
+    } else if (/1〜5|上半分|upper/i.test(message)) {
+      setAnalyzeStage(STAGE_LABELS.upper);
+    } else if (/6〜9|下半分|lower/i.test(message)) {
+      setAnalyzeStage(STAGE_LABELS.lower);
+    } else if (/送信|ヘルス|job /.test(message)) {
+      setAnalyzeStage("画像送信・ジョブ受付");
+    }
+  };
 
   const showToast = (message: string) => {
     setToast(message);
@@ -81,6 +135,7 @@ export function ScanTab({
     setAnalyzing(true);
     setError("");
     setUsageMeta(null);
+    setAnalyzeStage("画像送信・ジョブ受付");
     try {
       const dual = pages.hasPage2;
       const firstHint: AnalyzePageHint = dual ? "first_half" : "single";
@@ -91,12 +146,13 @@ export function ScanTab({
         roster: data.roster,
         matchMeta: { match_date: match.matchDate, opponent: match.opponent },
         apiKey: data.settings.geminiApiKey || undefined,
-        onStatus: setStatus,
+        onStatus: reportStatus,
       });
 
       let page2Result = null as Awaited<ReturnType<typeof analyzeScorePage>> | null;
       if (dual) {
-        setStatus("1枚目完了。続けて2枚目を解析します…");
+        reportStatus("1枚目完了。続けて2枚目を解析します…");
+        setAnalyzeStage("2枚目の送信");
         page2Result = await analyzeScorePage({
           page: pages.page2,
           pageHint: "second_half",
@@ -104,7 +160,7 @@ export function ScanTab({
           roster: data.roster,
           matchMeta: { match_date: match.matchDate, opponent: match.opponent },
           apiKey: data.settings.geminiApiKey || undefined,
-          onStatus: setStatus,
+          onStatus: reportStatus,
         });
       }
 
@@ -228,6 +284,8 @@ export function ScanTab({
           onAnalyze={() => void analyze()}
           error={error}
           status={status}
+          analyzeElapsedSec={analyzeElapsedSec}
+          analyzeStage={analyzeStage}
           usageLine={usageMeta ? formatAnalyzeUsageLine(usageMeta) : ""}
           showPreview={false}
         />
