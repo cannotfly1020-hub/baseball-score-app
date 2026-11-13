@@ -421,7 +421,7 @@ export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string>
 export function sensitivityLabel(value: RedSensitivity): string {
   if (value <= 0) return "原本";
   if (value < 40) return "弱";
-  if (value <= 60) return "自然";
+  if (value <= 60) return "標準";
   if (value < 85) return "強";
   return "最大";
 }

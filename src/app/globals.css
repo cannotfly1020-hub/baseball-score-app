@@ -638,10 +638,15 @@ textarea {
 
 .photo-compare {
   margin: 8px 0 12px;
+  padding: 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: visible;
   background: #fff;
+}
+
+.image-preview {
+  min-width: 0;
 }
 
 .matrix-legend {
