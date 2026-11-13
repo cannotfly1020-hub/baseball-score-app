@@ -21,15 +21,18 @@ export function formatRosterLines(roster: RosterPlayer[]): string {
 
 export const IMAGE_ROLES_PROMPT = `
 ### 【重要】提供画像の役割分担（必ず指定どおりに参照すること）
-1. **俯瞰用（全体原本・全体赤強調）**:
+1. **俯瞰用（全体の高コントラスト原本・全体赤強調）**:
    - スコアブック全体の位置関係・打順の並び・イニング列の把握用の参考画像。
-2. **拡大行画像（打順ごとの横帯・原本＋赤強調）**:
-   - 該当打順の行をオーバーラップ付きで切り出し拡大した画像。
+2. **打順グループ拡大画像（上半分＝1〜5番 / 下半分＝6〜9番の原本＋赤強調）**:
+   - 該当グループを切り出した拡大画像。
    - **黒ボールペンの小さな文字・数字**（例: 5-3、6-4-3、4F、K、B、WP、E、FC、1-3 など）と、
-     **赤ペンの安打線（菱形上の重ね書き含む）・得点●・進塁・赤文字**は、必ずこの拡大行画像から精密に読むこと。
+     **赤ペンの安打線（菱形上の重ね書き含む）・得点●・進塁・赤文字**は、必ずこのグループ画像から精密に読むこと。
 3. 判定手順:
-   - 俯瞰で行・列の位置を確認 → **拡大行画像でマス内の黒文字と赤ペンを確定**。
-   - 拡大行画像に赤強調があるのに「凡打／なし」へ落とすことは禁止（見落とし防止）。
+   - 俯瞰で行・列の位置を確認 → **グループ拡大画像でマス内の黒文字と赤ペンを確定**。
+   - グループ画像に赤強調があるのに「凡打／なし」へ落とすことは禁止（見落とし防止）。
+4. **確信度**:
+   - はっきり読めたマスだけ公式ラベルを確定する。
+   - かすれ・重なり・不明瞭・確信が持てないマスは必ず \`"要確認"\`（推測禁止）。
 
 ### 【絶対厳守】行・列ズレ防止（グリッド走査）
 - 各打者の各イニングのマス目を **1行ずつ（1番打者から順に、横方向＝1回→7回へ）** 走査すること。
@@ -182,59 +185,59 @@ ${OFFICIAL_LABELS_CSV}
 }
 
 /**
- * 打順1行ぶんの精密読取プロンプト。
- * 拡大された横帯画像から左端選手名＋1〜7回を読む。
+ * 打順グループ（上下半分）の精密読取プロンプト。
  */
-export function buildRowDetailsPrompt(args: {
-  battingOrder: number;
+export function buildGroupDetailsPrompt(args: {
+  fromOrder: number;
+  toOrder: number;
   roster: RosterPlayer[];
-  hintPlayerName?: string;
-  hintUniform?: string;
+  rosterHints?: Array<{ batting_order: number; player_name: string; uniform_number: string }>;
 }): string {
   const rosterBlock = formatRosterLines(args.roster);
-  const hint = args.hintPlayerName
-    ? `事前抽出ヒント: 打順${args.battingOrder}番は「${args.hintPlayerName}」（背番号:${args.hintUniform || "-"}）の可能性が高い。名簿と照合して確定せよ。`
-    : `打順${args.battingOrder}番の行を読む。左端の選手名は下記名簿と照合し、最も近い登録名に補正せよ。`;
+  const hintLines =
+    args.rosterHints
+      ?.filter((h) => h.batting_order >= args.fromOrder && h.batting_order <= args.toOrder)
+      .map((h) => `・${h.batting_order}番: ${h.player_name}（背番号:${h.uniform_number || "-"}）`)
+      .join("\n") || "・（事前ヒントなし。画像左端と名簿から確定）";
 
   return `
 ${IMAGE_ROLES_PROMPT}
 
 ### 役割
-あなたは早稲田式スコアブックの「打順 ${args.battingOrder} 番の横1行」だけを精密に読む専門AIです。
-提供される画像には、(1)全体俯瞰の原本・赤強調 (2)この打順行を拡大した原本・赤強調 があります。
-**細かい黒文字と赤ペンは拡大行画像から読み取り**、俯瞰は位置確認の参考にのみ使ってください。
+あなたは早稲田式スコアブックの「打順 ${args.fromOrder}〜${args.toOrder} 番」グループを精密に読む専門AIです。
+提供画像: (1)全体俯瞰の原本・赤強調 (2)このグループを拡大した原本・赤強調。
+**細かい黒文字と赤ペンはグループ拡大画像から読み取り**、俯瞰は位置確認の参考のみ。
 
 ### 登録済みチーム名簿（選手名はこの一覧へ自動照合すること）
 ${rosterBlock}
 
-### 対象行
-- 打順: **${args.battingOrder} 番**（この行以外の打者を出力しないこと）
-- ${hint}
-- 上下二段書き（先発／交代）がある場合は、同じ打順の別オブジェクトとして両方出力すること。
+### 事前抽出ヒント
+${hintLines}
 
-### 読み取り内容
-- 左端: 背番号・選手名（名簿と照合して最も近い登録名へ補正。判読不能なら「未登録」）
-- 1回〜7回の各マス: 黒文字記号と赤ペン菱形結線を併用して公式ラベルで判定
-- 打点 (rbi)・盗塁 (stolen_bases)
+### 対象
+- 打順 **${args.fromOrder}〜${args.toOrder}** のみ出力（範囲外は禁止）
+- 各打順について左端の背番号・選手名＋1〜7回の全マスを走査
+- 交代（二段書き）がある場合は is_substitute:true の別オブジェクトで出力
 
-### 黒文字の例（拡大行・原本側で精密読取）
-K/KC=三振, B/BB=四球, 死/DB=死球, WP=振り逃げ, E=敵失, FC=野選,
+### 黒文字（高コントラスト原本側）
+K/KC=三振, B/BB/四=四球, 死/DB=死球, WP=振り逃げ, E=敵失, FC=野選,
 1-3 / 5-3 / 6-4-3 / 4F / F / G / 丸数字 = 凡打
 
-### 赤ペン安打（拡大行・赤強調側で精密読取）
-菱形の辺の赤なぞり: 右下のみ=単打 / +右上=二塁打 / +左上=三塁打 / 4辺=本塁打
+### 赤ペン安打（赤強調側・菱形辺のなぞり）
+右下のみ=単打 / +右上=二塁打 / +左上=三塁打 / 4辺=本塁打
+得点●は打点の手がかり。残塁・進塁記号も見落とさないこと。
 
 ### 【絶対厳守】
-- イニング列を左詰めしない。空白は "なし"。
-- 判読困難・自信がないマスは必ず "要確認"（推測禁止）。
-- 出力の batting_order は必ず ${args.battingOrder}。
+- 行ごとに左→右（1〜7回）。空白は "なし"。列の左詰め禁止。
+- 曖昧・かすれ・重なりは必ず "要確認"（推測禁止）。
+- 選手名は名簿の最も近い登録名へ補正。判読不能なら「未登録」。
 
 ### 出力フォーマット（JSON配列のみ）
 inningsの値は次のいずれかのみ:
 ${OFFICIAL_LABELS_CSV}
 [
   {
-    "batting_order": ${args.battingOrder},
+    "batting_order": ${args.fromOrder},
     "uniform_number": "10",
     "player_name": "山田",
     "is_substitute": false,
@@ -253,4 +256,27 @@ ${OFFICIAL_LABELS_CSV}
   }
 ]
 `.trim();
+}
+
+/** @deprecated 互換用。グループ解析へ移行済み */
+export function buildRowDetailsPrompt(args: {
+  battingOrder: number;
+  roster: RosterPlayer[];
+  hintPlayerName?: string;
+  hintUniform?: string;
+}): string {
+  return buildGroupDetailsPrompt({
+    fromOrder: args.battingOrder,
+    toOrder: args.battingOrder,
+    roster: args.roster,
+    rosterHints: args.hintPlayerName
+      ? [
+          {
+            batting_order: args.battingOrder,
+            player_name: args.hintPlayerName,
+            uniform_number: args.hintUniform || "",
+          },
+        ]
+      : [],
+  });
 }

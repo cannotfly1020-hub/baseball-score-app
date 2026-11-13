@@ -1,25 +1,60 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
-import { BATTING_ROW_COUNT, emptyInnings, normalizeResult } from "@/lib/constants";
+import {
+  BATTING_GROUP_SPLITS,
+  emptyInnings,
+  normalizeResult,
+} from "@/lib/constants";
 import {
   isModelUnavailableError,
   resolveGeminiModelCandidates,
 } from "@/lib/gemini-models";
-import { buildRosterPrompt, buildRowDetailsPrompt } from "@/lib/prompts";
+import { buildGroupDetailsPrompt, buildRosterPrompt } from "@/lib/prompts";
 import { applyRosterMatching } from "@/lib/roster-match";
-import { makeOverviewThumb, sliceBattingRows } from "@/lib/row-slice";
 import { normalizePlayerRecord } from "@/lib/stats";
-import type { AnalyzeRequestBody, PlayerAtBat, RosterPlayer } from "@/lib/types";
+import type { PlayerAtBat, RosterPlayer } from "@/lib/types";
 
-/** Vercel / Node 上で長時間の多段 Gemini 呼び出しが切れないようにする */
-export const maxDuration = 60;
+/** 長時間の多段 Gemini 呼び出し用（ローカル/ホスティング） */
+export const maxDuration = 300;
 
 type ContentPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } };
 
-function stripDataUrl(input?: string): string {
-  return (input || "").replace(/^data:image\/\w+;base64,/, "");
+type ParsedRequest = {
+  color: Buffer;
+  red: Buffer;
+  colorTop: Buffer;
+  colorBottom: Buffer;
+  redTop: Buffer;
+  redBottom: Buffer;
+  roster: RosterPlayer[];
+  matchMeta: { match_date?: string; opponent?: string };
+  apiKey: string;
+};
+
+function summarizeError(err: unknown): { message: string; detail: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack =
+    err instanceof Error
+      ? (err.stack || "")
+          .split("\n")
+          .slice(0, 6)
+          .map((l) => l.trim())
+          .join(" | ")
+      : "";
+  return { message, detail: stack || message };
+}
+
+function jsonError(status: number, message: string, detail?: string) {
+  return NextResponse.json(
+    {
+      error: message,
+      detail: detail || undefined,
+      ok: false,
+    },
+    { status },
+  );
 }
 
 function stripCodeFence(text: string): string {
@@ -37,7 +72,6 @@ function parseJsonArray(text: string): unknown[] {
       const obj = parsed as { players?: unknown[]; player?: unknown };
       if (Array.isArray(obj.players)) return obj.players;
       if (obj.player) return [obj.player];
-      // 単一オブジェクト
       if ("batting_order" in (parsed as object) || "player_name" in (parsed as object)) {
         return [parsed];
       }
@@ -80,6 +114,81 @@ function formatGeminiError(err: unknown, model?: string): string {
   return `Google AI エラー: ${raw}${modelHint}`;
 }
 
+async function fileToBuffer(file: File | null): Promise<Buffer | null> {
+  if (!file) return null;
+  const ab = await file.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+function stripDataUrl(input?: string): string {
+  return (input || "").replace(/^data:image\/\w+;base64,/, "");
+}
+
+async function parseIncomingRequest(request: Request): Promise<ParsedRequest> {
+  const contentType = request.headers.get("content-type") || "";
+
+  if (contentType.includes("multipart/form-data")) {
+    const form = await request.formData();
+    const color = await fileToBuffer(form.get("color") as File | null);
+    const red = await fileToBuffer(form.get("red") as File | null);
+    const colorTop = await fileToBuffer(form.get("colorTop") as File | null);
+    const colorBottom = await fileToBuffer(form.get("colorBottom") as File | null);
+    const redTop = await fileToBuffer(form.get("redTop") as File | null);
+    const redBottom = await fileToBuffer(form.get("redBottom") as File | null);
+
+    if (!color || !red || !colorTop || !colorBottom || !redTop || !redBottom) {
+      throw Object.assign(new Error("FormData に必要な画像（color/red/上下分割）が不足しています。"), {
+        status: 400,
+      });
+    }
+
+    let roster: RosterPlayer[] = [];
+    try {
+      roster = JSON.parse(String(form.get("roster") || "[]"));
+    } catch {
+      roster = [];
+    }
+    let matchMeta: { match_date?: string; opponent?: string } = {};
+    try {
+      matchMeta = JSON.parse(String(form.get("matchMeta") || "{}"));
+    } catch {
+      matchMeta = {};
+    }
+
+    const apiKey = String(form.get("apiKey") || process.env.GEMINI_API_KEY || "").trim();
+    return { color, red, colorTop, colorBottom, redTop, redBottom, roster, matchMeta, apiKey };
+  }
+
+  // 後方互換: JSON+Base64
+  const body = (await request.json()) as Record<string, unknown>;
+  const toBuf = (v: unknown) => {
+    const s = stripDataUrl(typeof v === "string" ? v : "");
+    return s ? Buffer.from(s, "base64") : null;
+  };
+  const color = toBuf(body.colorImageBase64);
+  const red = toBuf(body.redImageBase64);
+  const colorTop = toBuf(body.colorTopImageBase64) || color;
+  const colorBottom = toBuf(body.colorBottomImageBase64) || color;
+  const redTop = toBuf(body.redTopImageBase64) || red;
+  const redBottom = toBuf(body.redBottomImageBase64) || red;
+  if (!color || !red || !colorTop || !colorBottom || !redTop || !redBottom) {
+    throw Object.assign(new Error("画像が不足しています。先にスコアブック写真を選択してください。"), {
+      status: 400,
+    });
+  }
+  return {
+    color,
+    red,
+    colorTop,
+    colorBottom,
+    redTop,
+    redBottom,
+    roster: Array.isArray(body.roster) ? (body.roster as RosterPlayer[]) : [],
+    matchMeta: (body.matchMeta as ParsedRequest["matchMeta"]) || {},
+    apiKey: String(body.apiKey || process.env.GEMINI_API_KEY || "").trim(),
+  };
+}
+
 async function generateJsonFromParts(
   ai: GoogleGenAI,
   model: string,
@@ -104,7 +213,6 @@ async function generateWithFallback(
   parts: ContentPart[],
   options?: {
     preferredModel?: string;
-    /** リクエスト内で models.list 結果を再利用 */
     candidateCache?: { list?: string[] };
   },
 ): Promise<{ text: string; parsed: unknown[]; model: string }> {
@@ -114,9 +222,8 @@ async function generateWithFallback(
   if (!candidates || candidates.length === 0) {
     candidates = await resolveGeminiModelCandidates(ai, preferredModel);
     if (cache) cache.list = candidates;
-    console.info("[analyze-score] model candidates:", candidates.slice(0, 12).join(" → "));
+    console.info("[analyze-score] model candidates:", candidates.slice(0, 10).join(" → "));
   } else if (preferredModel) {
-    // 成功モデルを先頭に寄せる
     candidates = [preferredModel, ...candidates.filter((m) => m !== preferredModel)];
   }
 
@@ -129,7 +236,6 @@ async function generateWithFallback(
       lastError = err;
       console.warn(`[analyze-score] model failed: ${model}`, err);
       if (isModelUnavailableError(err)) continue;
-      // 空応答は次モデルへ（thinking モデルの一時失敗など）
       if (/空の応答/i.test(err instanceof Error ? err.message : String(err))) continue;
       throw new Error(formatGeminiError(err, model));
     }
@@ -160,109 +266,63 @@ function mapToPlayerAtBat(row: Record<string, unknown>): PlayerAtBat {
   });
 }
 
-/** 並列実行の簡易プール */
-async function mapPool<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
-  async function run() {
-    while (next < items.length) {
-      const i = next++;
-      results[i] = await worker(items[i], i);
-    }
-  }
-  const runners = Array.from({ length: Math.min(concurrency, items.length) }, () => run());
-  await Promise.all(runners);
-  return results;
+function bufToBase64(buf: Buffer): string {
+  return buf.toString("base64");
 }
 
 export async function POST(request: Request) {
   try {
-    let body: AnalyzeRequestBody;
+    let parsed: ParsedRequest;
     try {
-      body = (await request.json()) as AnalyzeRequestBody;
-    } catch {
-      return NextResponse.json(
-        {
-          error:
-            "リクエスト本文の読み取りに失敗しました。画像が大きすぎる可能性があります。写真を撮り直すか、設定から再試行してください。",
-        },
-        { status: 400 },
+      parsed = await parseIncomingRequest(request);
+    } catch (err) {
+      const { message, detail } = summarizeError(err);
+      const status = typeof (err as { status?: number })?.status === "number"
+        ? (err as { status: number }).status
+        : 400;
+      return jsonError(status, message, detail);
+    }
+
+    const totalBytes =
+      parsed.color.length +
+      parsed.red.length +
+      parsed.colorTop.length +
+      parsed.colorBottom.length +
+      parsed.redTop.length +
+      parsed.redBottom.length;
+
+    if (totalBytes > 4 * 1024 * 1024) {
+      return jsonError(
+        413,
+        `画像データが大きすぎます（合計 ${(totalBytes / (1024 * 1024)).toFixed(2)}MB）。1.5MB以内に圧縮して再送してください。`,
       );
     }
 
-    const colorImageBase64 = stripDataUrl(body.colorImageBase64);
-    const redImageBase64 = stripDataUrl(body.redImageBase64);
-    if (!colorImageBase64 || !redImageBase64) {
-      return NextResponse.json(
-        { error: "画像が不足しています。先にスコアブック写真を選択してください。" },
-        { status: 400 },
+    if (!parsed.apiKey) {
+      return jsonError(
+        400,
+        "APIキーが設定されていません。画面右上の設定アイコンから Gemini API キーを入力するか、.env.local に GEMINI_API_KEY を設定してください。",
       );
     }
 
-    const colorTop = stripDataUrl(body.colorTopImageBase64);
-    const colorBottom = stripDataUrl(body.colorBottomImageBase64);
-    const redTop = stripDataUrl(body.redTopImageBase64);
-    const redBottom = stripDataUrl(body.redBottomImageBase64);
-    const hasHalves = Boolean(colorTop && colorBottom && redTop && redBottom);
-
-    const totalChars =
-      colorImageBase64.length +
-      redImageBase64.length +
-      colorTop.length +
-      colorBottom.length +
-      redTop.length +
-      redBottom.length;
-    // base64 文字数 ≈ バイト×4/3。5MB超は拒否（クライアントは3MB目標）
-    if (totalChars > 7_000_000) {
-      return NextResponse.json(
-        {
-          error: `画像データが大きすぎます（base64合計 ${(totalChars / 1_000_000).toFixed(1)}M文字）。長辺1800px・合計3MB以内に圧縮して再送してください。`,
-        },
-        { status: 413 },
-      );
-    }
-
-    const apiKey = (body.apiKey || process.env.GEMINI_API_KEY || "").trim();
-    if (!apiKey) {
-      return NextResponse.json(
-        {
-          error:
-            "APIキーが設定されていません。画面右上の設定アイコンから Gemini API キーを入力するか、.env.local に GEMINI_API_KEY を設定してください。",
-        },
-        { status: 400 },
-      );
-    }
-
-    const roster: RosterPlayer[] = Array.isArray(body.roster) ? body.roster : [];
-    const mimeType = body.mimeType || "image/jpeg";
-    const ai = new GoogleGenAI({ apiKey });
+    const mimeType = "image/jpeg";
+    const ai = new GoogleGenAI({ apiKey: parsed.apiKey });
     const candidateCache: { list?: string[] } = {};
+    const colorB64 = bufToBase64(parsed.color);
+    const redB64 = bufToBase64(parsed.red);
 
-    // Step 1: 全体俯瞰で名簿抽出（必要時は上下分割も参考に渡す）
-    const step1Parts: ContentPart[] = [
-      { text: buildRosterPrompt(roster) },
-      {
-        text: "【全体原本】左端の打順・背番号・選手名の抽出用（カラー原本）。",
-      },
-      { inlineData: { mimeType, data: colorImageBase64 } },
-      {
-        text: "【全体赤強調】位置合わせの参考。名簿抽出は原本を優先すること。",
-      },
-      { inlineData: { mimeType, data: redImageBase64 } },
-    ];
-    if (hasHalves) {
-      step1Parts.push(
-        { text: "【上半分・原本】上側の打順行の選手名確認用。" },
-        { inlineData: { mimeType, data: colorTop } },
-        { text: "【下半分・原本】下側の打順行の選手名確認用。" },
-        { inlineData: { mimeType, data: colorBottom } },
-      );
-    }
-    const step1 = await generateWithFallback(ai, step1Parts, { candidateCache });
+    // Step 1: 名簿抽出（全体俯瞰のみ・軽量）
+    const step1 = await generateWithFallback(
+      ai,
+      [
+        { text: buildRosterPrompt(parsed.roster) },
+        { text: "【全体・高コントラスト原本】左端の打順・背番号・選手名の抽出用。" },
+        { inlineData: { mimeType, data: colorB64 } },
+        { text: "【全体・赤強調】位置合わせ参考。名簿は原本優先。" },
+        { inlineData: { mimeType, data: redB64 } },
+      ],
+      { candidateCache },
+    );
 
     const rosterExtracted = applyRosterMatching(
       step1.parsed.map((row) => {
@@ -274,84 +334,69 @@ export async function POST(request: Request) {
           is_substitute: Boolean(r.is_substitute),
         };
       }),
-      roster,
+      parsed.roster,
     );
 
-    // 俯瞰サムネ＋打順行スライスを作成（送信画像は既に ≤1800px のため拡大は控えめ）
-    const [colorThumb, redThumb, colorRows, redRows] = await Promise.all([
-      makeOverviewThumb(colorImageBase64, 1200),
-      makeOverviewThumb(redImageBase64, 1200),
-      sliceBattingRows(colorImageBase64, {
-        rowCount: BATTING_ROW_COUNT,
-        scale: 1.6,
-        jpegQuality: 85,
+    // Step 2: 上下2グループのみ（旧9行並列はタイムアウト＝Failed to fetch の主因）
+    const groupImages = {
+      upper: {
+        color: bufToBase64(parsed.colorTop),
+        red: bufToBase64(parsed.redTop),
+      },
+      lower: {
+        color: bufToBase64(parsed.colorBottom),
+        red: bufToBase64(parsed.redBottom),
+      },
+    } as const;
+
+    const groupResults = await Promise.all(
+      BATTING_GROUP_SPLITS.map(async (group) => {
+        const imgs = groupImages[group.id as keyof typeof groupImages];
+        const prompt = buildGroupDetailsPrompt({
+          fromOrder: group.from,
+          toOrder: group.to,
+          roster: parsed.roster,
+          rosterHints: rosterExtracted,
+        });
+
+        const result = await generateWithFallback(
+          ai,
+          [
+            { text: prompt },
+            { text: "【俯瞰・全体原本（参考）】打順位置の確認用。細部はグループ拡大から読むこと。" },
+            { inlineData: { mimeType, data: colorB64 } },
+            { text: "【俯瞰・全体赤強調（参考）】" },
+            { inlineData: { mimeType, data: redB64 } },
+            {
+              text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
+            },
+            { inlineData: { mimeType, data: imgs.color } },
+            {
+              text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
+            },
+            { inlineData: { mimeType, data: imgs.red } },
+          ],
+          { preferredModel: step1.model, candidateCache },
+        );
+
+        const players = applyRosterMatching(
+          result.parsed
+            .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
+            .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
+          parsed.roster,
+        );
+
+        return { group: group.id, players, raw: result.parsed, model: result.model };
       }),
-      sliceBattingRows(redImageBase64, {
-        rowCount: BATTING_ROW_COUNT,
-        scale: 1.6,
-        jpegQuality: 85,
-      }),
-    ]);
+    );
 
-    // Step 2: 打順ごと（横1行）の拡大解析
-    const rowResults = await mapPool(colorRows, 3, async (colorRow, index) => {
-      const redRow = redRows[index];
-      const battingOrder = colorRow.battingOrder;
-      const hint = rosterExtracted.find(
-        (p) => p.batting_order === battingOrder && !p.is_substitute,
-      );
-      const prompt = buildRowDetailsPrompt({
-        battingOrder,
-        roster,
-        hintPlayerName: hint?.player_name,
-        hintUniform: hint?.uniform_number,
-      });
-
-      const result = await generateWithFallback(
-        ai,
-        [
-          { text: prompt },
-          {
-            text: "【俯瞰・全体原本（参考）】打順の位置関係確認用。細部は拡大行から読むこと。",
-          },
-          { inlineData: { mimeType: colorThumb.mimeType, data: colorThumb.base64 } },
-          {
-            text: "【俯瞰・全体赤強調（参考）】赤ペンの大まかな位置確認用。",
-          },
-          { inlineData: { mimeType: redThumb.mimeType, data: redThumb.base64 } },
-          {
-            text: `【拡大行・原本】打順${battingOrder}番の横帯を拡大。左端の選手名と黒ボールペンの小さな文字・数字（1-3、5-3、4F、K、B、WP、E、FC 等）を精密に読むこと。`,
-          },
-          { inlineData: { mimeType: colorRow.mimeType, data: colorRow.base64 } },
-          {
-            text: `【拡大行・赤強調】同じ打順${battingOrder}番の赤ペン安打線・得点●・進塁を精密に読むこと。菱形辺の重ね書きを最優先。`,
-          },
-          { inlineData: { mimeType: redRow.mimeType, data: redRow.base64 } },
-        ],
-        { preferredModel: step1.model, candidateCache },
-      );
-
-      const players = applyRosterMatching(
-        result.parsed.map((row) => {
-          const r = row as Record<string, unknown>;
-          const mapped = mapToPlayerAtBat({ ...r, batting_order: battingOrder });
-          return mapped;
-        }),
-        roster,
-      );
-
-      return { battingOrder, players, raw: result.parsed, model: result.model };
-    });
-
-    let match_date = body.matchMeta?.match_date || "";
-    let opponent = body.matchMeta?.opponent || "";
+    let match_date = parsed.matchMeta.match_date || "";
+    let opponent = parsed.matchMeta.opponent || "";
     const players: PlayerAtBat[] = [];
 
-    for (const row of rowResults) {
-      for (const p of row.players) {
-        players.push(p);
-      }
-      for (const raw of row.raw) {
+    for (const g of groupResults) {
+      for (const p of g.players) players.push(p);
+      for (const raw of g.raw) {
         const r = raw as Record<string, unknown>;
         if (!match_date && r.match_date && String(r.match_date) !== "-") {
           match_date = String(r.match_date);
@@ -362,7 +407,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // 行解析が空なら名簿だけでも返す
     if (players.length === 0 && rosterExtracted.length > 0) {
       for (const r of rosterExtracted) {
         players.push(
@@ -377,27 +421,28 @@ export async function POST(request: Request) {
       }
     }
 
-    // 打順順に安定ソート
     players.sort((a, b) => {
       if (a.batting_order !== b.batting_order) return a.batting_order - b.batting_order;
       return Number(a.is_substitute) - Number(b.is_substitute);
     });
 
-    const usedModel = rowResults[0]?.model || step1.model;
-
     return NextResponse.json({
+      ok: true,
       players,
       match_date,
       opponent,
-      model: usedModel,
+      model: groupResults[0]?.model || step1.model,
+      pipeline: "roster+upper/lower-groups",
+      bytesReceived: totalBytes,
       raw: {
         step1: step1.parsed,
-        rows: rowResults.map((r) => ({ battingOrder: r.battingOrder, raw: r.raw })),
+        groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "解析に失敗しました";
+    const { message, detail } = summarizeError(err);
     console.error("[analyze-score]", err);
-    return NextResponse.json({ error: message }, { status: 500 });
+    // プロセスを落とさず必ず JSON を返す
+    return jsonError(500, message, detail);
   }
 }

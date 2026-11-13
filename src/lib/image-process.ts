@@ -1,9 +1,8 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
- * 1) 加工なしカラー原本（長辺 ≤1800px・リサイズのみ）
- * 2) 線の細さ・筆圧の濃淡を保ったまま、赤みのある画素の G/B だけを
- *    引き下げて彩度を自然に上げた解析用画像（単色ベタ塗り・膨張なし）
- * 解析送信時は prepareAnalyzeImages で合計 ≤3MB に圧縮する。
+ * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1600px）
+ * 2) 赤強調画像（線の細さを保ったまま赤ペン彩度を上げる）
+ * 解析送信は FormData バイナリで合計 ≤1.5MB（全体＋上下2分割）。
  */
 
 import {
@@ -19,20 +18,18 @@ export interface ProcessedImages {
   height: number;
 }
 
-/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 3MB） */
+/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 1.5MB） */
 export interface AnalyzeImagePayload {
   colorDataUrl: string;
   redDataUrl: string;
-  /** 必要時のみ: 上下2分割（原本） */
-  colorTopDataUrl?: string;
-  colorBottomDataUrl?: string;
-  /** 必要時のみ: 上下2分割（赤強調） */
-  redTopDataUrl?: string;
-  redBottomDataUrl?: string;
+  colorTopDataUrl: string;
+  colorBottomDataUrl: string;
+  redTopDataUrl: string;
+  redBottomDataUrl: string;
   approxBytes: number;
   maxSide: number;
   jpegQuality: number;
-  splitHalves: boolean;
+  splitHalves: true;
 }
 
 /** 感度 0（加工なし）〜 100（最大強調）。赤が浮かび黒文字も潰れない初期値 */
@@ -89,6 +86,32 @@ function gbKeepFactor(sensitivity: RedSensitivity): number {
  * - R > G かつ R > B の画素だけ、元の R と濃淡を保ったまま G/B を強度に応じて減算
  * - 線の細さ・筆圧の濃淡はピクセル構造ごと維持される
  */
+/**
+ * 黒ボールペン・枠線を鮮明にする高コントラスト処理。
+ * 赤みのある画素は触らず、暗いインクを引き締め紙面を明るくする。
+ */
+export function enhanceBlackContrast(imageData: ImageData): ImageData {
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    // 赤ペン候補はスキップ（赤強調側で扱う）
+    if (r > g + 10 && r > b + 10) continue;
+
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    let target = lum;
+    if (lum < 150) target = Math.max(0, lum * 0.78);
+    else if (lum > 205) target = Math.min(255, 255 - (255 - lum) * 0.55);
+    if (lum < 1) continue;
+    const scale = target / lum;
+    data[i] = clamp(r * scale);
+    data[i + 1] = clamp(g * scale);
+    data[i + 2] = clamp(b * scale);
+  }
+  return imageData;
+}
+
 export function extractRed(
   imageData: ImageData,
   sensitivity: RedSensitivity = DEFAULT_RED_SENSITIVITY,
@@ -167,14 +190,17 @@ export async function processScorebookImage(
   const redSensitivity = options?.redSensitivity ?? DEFAULT_RED_SENSITIVITY;
   const { canvas, ctx, width, height } = await drawSourceToCanvas(source, options);
 
-  // 1枚目: 色加工なしの高解像度カラー原本（リサイズ＋JPEGのみ）
+  // 1枚目: 高コントラスト原本（黒文字鮮明化）
+  const colorPixels = ctx.getImageData(0, 0, width, height);
+  enhanceBlackContrast(colorPixels);
+  ctx.putImageData(colorPixels, 0, 0);
   const colorDataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
 
-  // 2枚目: 同一解像度から赤強調のみ適用
-  const base = ctx.getImageData(0, 0, width, height);
-  const redData = new ImageData(new Uint8ClampedArray(base.data), width, height);
+  // 2枚目: 同一解像度から赤強調のみ適用（コントラスト前のコピーを使う）
+  const redSource = await drawSourceToCanvas(source, options);
+  const redData = redSource.ctx.getImageData(0, 0, redSource.width, redSource.height);
   extractRed(redData, redSensitivity);
-  const { canvas: redCanvas, ctx: redCtx } = createCanvas(width, height);
+  const { canvas: redCanvas, ctx: redCtx } = createCanvas(redSource.width, redSource.height);
   redCtx.putImageData(redData, 0, 0);
 
   return {
@@ -260,10 +286,17 @@ async function splitVerticalHalves(
   };
 }
 
+export function dataUrlToBlob(dataUrl: string, mime = "image/jpeg"): Blob {
+  const b64 = dataUrlToBase64(dataUrl);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 /**
- * AI解析用に原本＋赤強調を長辺1800 / JPEG0.85へ整え、
- * 合計サイズが 3MB を超える場合は品質・解像度を下げ、
- * なお大きい場合のみ上下2分割を付与する（それ以上は分割しない）。
+ * 全体俯瞰＋上下2分割（打順1–5 / 6–9）を必ず用意し、合計 ≤1.5MB に収める。
+ * FormData バイナリ送信用。
  */
 export async function prepareAnalyzeImages(
   colorDataUrl: string,
@@ -271,39 +304,51 @@ export async function prepareAnalyzeImages(
   options?: { maxBytes?: number },
 ): Promise<AnalyzeImagePayload> {
   const maxBytes = options?.maxBytes ?? ANALYZE_MAX_PAYLOAD_BYTES;
-  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.65, 0.55];
-  const sideSteps = [IMAGE_MAX_SIDE, 1600, 1400, 1200];
+  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.68, 0.58, 0.5];
+  const overviewSides = [1200, 1100, 1000, 900];
+  const halfSides = [IMAGE_MAX_SIDE, 1400, 1200, 1000, 900];
 
-  let best: AnalyzeImagePayload | null = null;
-
-  for (const maxSide of sideSteps) {
+  for (let i = 0; i < halfSides.length; i++) {
+    const halfSide = halfSides[i];
+    const overviewSide = overviewSides[Math.min(i, overviewSides.length - 1)];
     for (const jpegQuality of qualitySteps) {
-      const color = await reencodeDataUrl(colorDataUrl, maxSide, jpegQuality);
-      const red = await reencodeDataUrl(redDataUrl, maxSide, jpegQuality);
-      const approxBytes = approxDecodedBytes(color.dataUrl, red.dataUrl);
-      best = {
+      const color = await reencodeDataUrl(colorDataUrl, overviewSide, jpegQuality);
+      const red = await reencodeDataUrl(redDataUrl, overviewSide, jpegQuality);
+      const colorHi = await reencodeDataUrl(colorDataUrl, halfSide, jpegQuality);
+      const redHi = await reencodeDataUrl(redDataUrl, halfSide, jpegQuality);
+      const colorHalves = await splitVerticalHalves(colorHi.dataUrl, jpegQuality);
+      const redHalves = await splitVerticalHalves(redHi.dataUrl, jpegQuality);
+
+      const payload: AnalyzeImagePayload = {
         colorDataUrl: color.dataUrl,
         redDataUrl: red.dataUrl,
-        approxBytes,
-        maxSide,
+        colorTopDataUrl: colorHalves.top,
+        colorBottomDataUrl: colorHalves.bottom,
+        redTopDataUrl: redHalves.top,
+        redBottomDataUrl: redHalves.bottom,
+        approxBytes: 0,
+        maxSide: halfSide,
         jpegQuality,
-        splitHalves: false,
+        splitHalves: true,
       };
-      if (approxBytes <= maxBytes) {
-        return best;
-      }
+      payload.approxBytes = approxDecodedBytes(
+        payload.colorDataUrl,
+        payload.redDataUrl,
+        payload.colorTopDataUrl,
+        payload.colorBottomDataUrl,
+        payload.redTopDataUrl,
+        payload.redBottomDataUrl,
+      );
+      if (payload.approxBytes <= maxBytes) return payload;
     }
   }
 
-  // それでも超える場合: 上下2分割を付与しつつ本体はさらに圧縮した2枚を送る
-  const fallbackQuality = 0.55;
-  const fallbackSide = 1200;
-  const color = await reencodeDataUrl(colorDataUrl, fallbackSide, fallbackQuality);
-  const red = await reencodeDataUrl(redDataUrl, fallbackSide, fallbackQuality);
-  const colorHalves = await splitVerticalHalves(color.dataUrl, fallbackQuality);
-  const redHalves = await splitVerticalHalves(red.dataUrl, fallbackQuality);
-
-  let payload: AnalyzeImagePayload = {
+  // 最終フォールバック（必ず halves 付きで返す）
+  const color = await reencodeDataUrl(colorDataUrl, 800, 0.45);
+  const red = await reencodeDataUrl(redDataUrl, 800, 0.45);
+  const colorHalves = await splitVerticalHalves(color.dataUrl, 0.45);
+  const redHalves = await splitVerticalHalves(red.dataUrl, 0.45);
+  const payload: AnalyzeImagePayload = {
     colorDataUrl: color.dataUrl,
     redDataUrl: red.dataUrl,
     colorTopDataUrl: colorHalves.top,
@@ -311,35 +356,47 @@ export async function prepareAnalyzeImages(
     redTopDataUrl: redHalves.top,
     redBottomDataUrl: redHalves.bottom,
     approxBytes: 0,
-    maxSide: fallbackSide,
-    jpegQuality: fallbackQuality,
+    maxSide: 800,
+    jpegQuality: 0.45,
     splitHalves: true,
   };
-
   payload.approxBytes = approxDecodedBytes(
     payload.colorDataUrl,
     payload.redDataUrl,
-    payload.colorTopDataUrl || "",
-    payload.colorBottomDataUrl || "",
-    payload.redTopDataUrl || "",
-    payload.redBottomDataUrl || "",
+    payload.colorTopDataUrl,
+    payload.colorBottomDataUrl,
+    payload.redTopDataUrl,
+    payload.redBottomDataUrl,
   );
-
-  // 分割込みでも超える場合は分割を捨てて2枚のみさらに圧縮
-  if (payload.approxBytes > maxBytes) {
-    const tinyColor = await reencodeDataUrl(colorDataUrl, 1000, 0.5);
-    const tinyRed = await reencodeDataUrl(redDataUrl, 1000, 0.5);
-    payload = {
-      colorDataUrl: tinyColor.dataUrl,
-      redDataUrl: tinyRed.dataUrl,
-      approxBytes: approxDecodedBytes(tinyColor.dataUrl, tinyRed.dataUrl),
-      maxSide: 1000,
-      jpegQuality: 0.5,
-      splitHalves: false,
-    };
-  }
-
   return payload;
+}
+
+/** 解析 API 用 FormData（巨大 JSON+Base64 を使わない） */
+export function buildAnalyzeFormData(args: {
+  images: AnalyzeImagePayload;
+  roster: unknown;
+  matchMeta: { match_date?: string; opponent?: string };
+  apiKey?: string;
+}): FormData {
+  const fd = new FormData();
+  fd.append("color", dataUrlToBlob(args.images.colorDataUrl), "color.jpg");
+  fd.append("red", dataUrlToBlob(args.images.redDataUrl), "red.jpg");
+  fd.append("colorTop", dataUrlToBlob(args.images.colorTopDataUrl), "color-top.jpg");
+  fd.append("colorBottom", dataUrlToBlob(args.images.colorBottomDataUrl), "color-bottom.jpg");
+  fd.append("redTop", dataUrlToBlob(args.images.redTopDataUrl), "red-top.jpg");
+  fd.append("redBottom", dataUrlToBlob(args.images.redBottomDataUrl), "red-bottom.jpg");
+  fd.append("roster", JSON.stringify(args.roster ?? []));
+  fd.append("matchMeta", JSON.stringify(args.matchMeta ?? {}));
+  if (args.apiKey) fd.append("apiKey", args.apiKey);
+  fd.append(
+    "imageMeta",
+    JSON.stringify({
+      maxSide: args.images.maxSide,
+      jpegQuality: args.images.jpegQuality,
+      approxBytes: args.images.approxBytes,
+    }),
+  );
+  return fd;
 }
 
 export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string> {

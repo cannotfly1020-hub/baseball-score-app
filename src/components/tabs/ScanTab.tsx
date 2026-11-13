@@ -7,7 +7,7 @@ import { ImagePreview } from "@/components/scan/ImagePreview";
 import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
 import {
   DEFAULT_RED_SENSITIVITY,
-  dataUrlToBase64,
+  buildAnalyzeFormData,
   prepareAnalyzeImages,
   processScorebookImage,
   reprocessRedOnly,
@@ -48,7 +48,7 @@ export function ScanTab({
   const skipNextSensitivityEffect = useRef(false);
 
   const onFile = async (file: File) => {
-    setStatus("画像を前処理中（長辺1800px）…");
+    setStatus("画像を前処理中（高コントラスト＋赤強調）…");
     setError("");
     setSavedMatch(null);
     setSourceFile(file);
@@ -113,58 +113,50 @@ export function ScanTab({
 
     setAnalyzing(true);
     setError("");
-    setStatus("画像を圧縮して送信準備中…");
+    setStatus("画像を圧縮して FormData 送信準備中…");
     try {
       const prepared = await prepareAnalyzeImages(colorUrl, redUrl);
-      const colorB64 = dataUrlToBase64(prepared.colorDataUrl);
-      const redB64 = dataUrlToBase64(prepared.redDataUrl);
       const approxMb = (prepared.approxBytes / (1024 * 1024)).toFixed(2);
 
-      if (prepared.approxBytes > 3 * 1024 * 1024) {
+      if (prepared.approxBytes > 1.5 * 1024 * 1024) {
         setError(
-          `画像データが大きすぎます（約 ${approxMb}MB / 上限3MB）。別の写真で撮り直してください。`,
+          `画像データが大きすぎます（約 ${approxMb}MB / 上限1.5MB）。別の写真で撮り直してください。`,
         );
         setStatus("");
         return;
       }
 
       setStatus(
-        `Gemini で解析中…（約 ${approxMb}MB / ${prepared.maxSide}px${prepared.splitHalves ? "・上下分割あり" : ""}）`,
+        `Gemini で解析中…（FormData 約 ${approxMb}MB / 名簿→上下2グループ）`,
       );
 
-      const body: Record<string, unknown> = {
-        colorImageBase64: colorB64,
-        redImageBase64: redB64,
-        mimeType: "image/jpeg",
-        apiKey: data.settings.geminiApiKey || undefined,
+      const form = buildAnalyzeFormData({
+        images: prepared,
         roster: data.roster,
         matchMeta: { match_date: matchDate, opponent },
-      };
-      if (prepared.splitHalves) {
-        body.colorTopImageBase64 = dataUrlToBase64(prepared.colorTopDataUrl || "");
-        body.colorBottomImageBase64 = dataUrlToBase64(prepared.colorBottomDataUrl || "");
-        body.redTopImageBase64 = dataUrlToBase64(prepared.redTopDataUrl || "");
-        body.redBottomImageBase64 = dataUrlToBase64(prepared.redBottomDataUrl || "");
-      }
+        apiKey: data.settings.geminiApiKey || undefined,
+      });
 
       let res: Response;
       try {
         res = await fetch("/api/analyze-score", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: form,
         });
       } catch (fetchErr) {
         const detail =
-          fetchErr instanceof Error ? fetchErr.message : String(fetchErr);
+          fetchErr instanceof Error
+            ? `${fetchErr.name}: ${fetchErr.message}`
+            : String(fetchErr);
         throw new Error(
-          `通信エラーが発生しました（${detail}）。ネットワーク接続を確認するか、画像サイズを小さくして再試行してください。`,
+          `通信エラーが発生しました（${detail}）。サーバーが応答前に切断された可能性があります。再試行するか、画像を明るく撮り直してください。`,
         );
       }
 
       const rawText = await res.text();
       let json: {
         error?: string;
+        detail?: string;
         players?: PlayerAtBat[];
         match_date?: string;
         opponent?: string;
@@ -174,14 +166,16 @@ export function ScanTab({
         json = rawText ? (JSON.parse(rawText) as typeof json) : {};
       } catch {
         throw new Error(
-          `サーバー応答の解析に失敗しました (HTTP ${res.status})。本文: ${rawText.slice(0, 200) || "(空)"}`,
+          `サーバー応答の解析に失敗しました (HTTP ${res.status} ${res.statusText || ""})。本文: ${rawText.slice(0, 240) || "(空)"}`,
         );
       }
 
       if (!res.ok) {
+        const extra = json.detail ? ` / ${json.detail}` : "";
         throw new Error(
-          json.error ||
-            `解析に失敗しました (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""})`,
+          (json.error ||
+            `解析に失敗しました (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""})`) +
+            extra,
         );
       }
 

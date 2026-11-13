@@ -5,8 +5,9 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   experimental: {
-    // スコアブック画像（base64）の送受信に余裕を持たせる
+    // FormData 画像送信 + 長時間 Gemini 解析
     proxyClientMaxBodySize: "50mb",
+    proxyTimeout: 300_000, // 5分（旧60s切断が Failed to fetch の主因）
     serverActions: {
       bodySizeLimit: "50mb",
     },

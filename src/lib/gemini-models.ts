@@ -14,24 +14,35 @@ function normalizeModelId(name: string): string {
 function isUsableGeminiId(id: string): boolean {
   if (!id || !/^gemini/i.test(id)) return false;
   if (EXCLUDE_RE.test(id)) return false;
-  return /pro|flash/i.test(id);
+  // 新規キーでは 2.5 系は generate で 404 になる（list には残る）
+  if (/^gemini-2\./i.test(id)) return false;
+  return /pro|flash|argon|carbon|hydrogen/i.test(id);
 }
 
-/** pro > flash > flash-lite。同ティアは版番号の新しい順 */
+/** argon/carbon など版番号なし ID もスコア化 */
+function modelFamilyBonus(id: string): number {
+  const n = id.toLowerCase();
+  if (/argon/.test(n)) return 480;
+  if (/carbon/.test(n)) return 470;
+  if (/hydrogen/.test(n)) return 460;
+  return 0;
+}
+
+/** pro/argon > flash > flash-lite。同ティアは版番号の新しい順 */
 export function modelPreferenceScore(id: string): number {
   const n = normalizeModelId(id).toLowerCase();
   let tier = 0;
   if (/flash-lite/.test(n)) tier = 100;
   else if (/flash/.test(n)) tier = 200;
-  else if (/pro/.test(n)) tier = 300;
+  else if (/pro|argon|carbon|hydrogen/.test(n)) tier = 300;
   else tier = 50;
 
   const ver = n.match(/gemini-(\d+(?:\.\d+)*)/);
   const versionScore = ver ? Math.round(parseFloat(ver[1]) * 100) : 0;
+  const family = modelFamilyBonus(n);
 
-  // latest エイリアスは高めに
-  if (/latest/.test(n)) return tier + 250 + versionScore;
-  return tier + versionScore;
+  if (/latest/.test(n)) return tier + 250 + versionScore + family;
+  return tier + versionScore + family;
 }
 
 /**
