@@ -90,7 +90,7 @@ export function ScanTab({
           setSensitivityBusy(false);
         }
       })();
-    }, 180);
+    }, 60);
     return () => {
       if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
     };
