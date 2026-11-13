@@ -93,11 +93,11 @@ export const GEMINI_MODEL_CANDIDATES = [
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
 
-/** Canvas 前処理時の長辺上限（iPhone高画質対策） */
-export const IMAGE_MAX_SIDE = 1600;
+/** Canvas 前処理時の長辺上限（小さな黒文字判読のため高めに設定） */
+export const IMAGE_MAX_SIDE = 2500;
 
 /** JPEG 出力品質（0–1） */
-export const IMAGE_JPEG_QUALITY = 0.82;
+export const IMAGE_JPEG_QUALITY = 0.9;
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 

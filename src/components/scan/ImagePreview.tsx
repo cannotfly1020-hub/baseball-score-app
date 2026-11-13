@@ -63,7 +63,7 @@ export function ImagePreview({
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
-          alt={mode === "color" ? "鮮鋭化カラー原本" : "赤色抽出画像"}
+          alt={mode === "color" ? "加工なし高解像度カラー原本" : "赤強調画像"}
           style={{
             transform: `scale(${zoom}) rotate(${rotation}deg)`,
             opacity: mode === "red" && sensitivityBusy ? 0.55 : 1,
