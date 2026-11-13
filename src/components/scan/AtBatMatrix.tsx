@@ -1,23 +1,34 @@
 "use client";
 
+import { Pencil } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AtBatEditSheet } from "@/components/scan/AtBatEditSheet";
+import { PlayerEditSheet } from "@/components/scan/PlayerEditSheet";
 import { badgeTone, formatAtBatBadge, getCellMeta } from "@/lib/atbat-display";
 import { INNING_KEYS } from "@/lib/constants";
 import { syncPlayerRbiFromCells } from "@/lib/stats";
-import type { AtBatCellMeta, InningKey, PlayerAtBat, ResultLabel } from "@/lib/types";
+import type {
+  AtBatCellMeta,
+  InningKey,
+  PlayerAtBat,
+  ResultLabel,
+  RosterPlayer,
+} from "@/lib/types";
 
 export function AtBatMatrix({
   players,
+  roster,
   onChange,
 }: {
   players: PlayerAtBat[];
+  roster: RosterPlayer[];
   onChange: (players: PlayerAtBat[]) => void;
 }) {
-  const [edit, setEdit] = useState<{
+  const [cellEdit, setCellEdit] = useState<{
     playerIndex: number;
     inning: InningKey;
   } | null>(null);
+  const [playerEditIndex, setPlayerEditIndex] = useState<number | null>(null);
 
   const sorted = useMemo(() => {
     return players
@@ -56,7 +67,13 @@ export function AtBatMatrix({
     onChange(next);
   };
 
-  const editingPlayer = edit ? players[edit.playerIndex] : null;
+  const applyPlayer = (playerIndex: number, patch: Partial<PlayerAtBat>) => {
+    onChange(players.map((p, i) => (i === playerIndex ? { ...p, ...patch } : p)));
+  };
+
+  const editingCellPlayer = cellEdit ? players[cellEdit.playerIndex] : null;
+  const editingPlayer =
+    playerEditIndex !== null ? players[playerEditIndex] : null;
 
   return (
     <>
@@ -76,16 +93,31 @@ export function AtBatMatrix({
               {sorted.map(({ p, index }) => (
                 <tr key={`${p.batting_order}-${p.player_name}-${index}`}>
                   <td className="matrix-sticky">
-                    <div className="matrix-order">
+                    <button
+                      type="button"
+                      className="matrix-player-btn"
+                      aria-label={`${p.player_name || "選手"}の情報を編集`}
+                      onClick={() => setPlayerEditIndex(index)}
+                    >
                       <span className="matrix-order-num">{p.batting_order || "-"}</span>
                       {p.is_substitute ? <span className="matrix-sub">交</span> : null}
-                    </div>
+                    </button>
                   </td>
                   <td className="matrix-sticky matrix-sticky-2">
-                    <div className="matrix-player">
-                      <span className="matrix-pos">{p.position || `#${p.uniform_number || "-"}`}</span>
-                      <span className="matrix-name">{p.player_name || "未登録"}</span>
-                    </div>
+                    <button
+                      type="button"
+                      className="matrix-player-btn matrix-player-btn-wide"
+                      aria-label={`${p.player_name || "選手"}の名前・守備を編集`}
+                      onClick={() => setPlayerEditIndex(index)}
+                    >
+                      <div className="matrix-player">
+                        <span className="matrix-pos">
+                          {p.position || `#${p.uniform_number || "-"}`}
+                          <Pencil size={11} className="matrix-edit-icon" aria-hidden />
+                        </span>
+                        <span className="matrix-name">{p.player_name || "未登録"}</span>
+                      </div>
+                    </button>
                   </td>
                   {INNING_KEYS.map((k) => {
                     const result = p.innings[k];
@@ -99,14 +131,22 @@ export function AtBatMatrix({
                           type="button"
                           className={`matrix-cell tone-${tone}${needs ? " needs" : ""}`}
                           aria-label={`${p.player_name} ${k}回 ${label}`}
-                          onClick={() => setEdit({ playerIndex: index, inning: k })}
+                          onClick={() => setCellEdit({ playerIndex: index, inning: k })}
                         >
                           <span className="matrix-cell-label">{label}</span>
-                          {meta.scored ? <span className="matrix-run-dot" aria-hidden>●</span> : null}
+                          {meta.scored ? (
+                            <span className="matrix-run-dot" aria-hidden>
+                              ●
+                            </span>
+                          ) : null}
                           {(meta.rbi || 0) > 0 ? (
                             <span className="matrix-rbi-chip">点{meta.rbi}</span>
                           ) : null}
-                          {needs ? <span className="matrix-warn-icon" aria-hidden>!</span> : null}
+                          {needs ? (
+                            <span className="matrix-warn-icon" aria-hidden>
+                              !
+                            </span>
+                          ) : null}
                         </button>
                       </td>
                     );
@@ -119,13 +159,24 @@ export function AtBatMatrix({
       </div>
 
       <AtBatEditSheet
-        open={Boolean(edit)}
-        player={editingPlayer}
-        playerIndex={edit?.playerIndex ?? -1}
-        inning={edit?.inning ?? null}
-        onClose={() => setEdit(null)}
+        open={Boolean(cellEdit)}
+        player={editingCellPlayer}
+        playerIndex={cellEdit?.playerIndex ?? -1}
+        inning={cellEdit?.inning ?? null}
+        onClose={() => setCellEdit(null)}
         onApply={(playerIndex, inning, result, meta) => {
           applyCell(playerIndex, inning, result, meta);
+        }}
+      />
+
+      <PlayerEditSheet
+        open={playerEditIndex !== null}
+        player={editingPlayer}
+        roster={roster}
+        onClose={() => setPlayerEditIndex(null)}
+        onApply={(patch) => {
+          if (playerEditIndex === null) return;
+          applyPlayer(playerEditIndex, patch);
         }}
       />
     </>

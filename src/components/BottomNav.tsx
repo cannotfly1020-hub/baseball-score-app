@@ -7,7 +7,7 @@ const ITEMS: { id: TabId; label: string; icon: typeof Home }[] = [
   { id: "home", label: "ホーム", icon: Home },
   { id: "scan", label: "AI読取", icon: Camera },
   { id: "stats", label: "成績", icon: BarChart3 },
-  { id: "history", label: "履歴", icon: History },
+  { id: "history", label: "試合一覧", icon: History },
 ];
 
 export function BottomNav({

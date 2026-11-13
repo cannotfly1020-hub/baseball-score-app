@@ -64,6 +64,15 @@ export interface PlayerAtBat {
   highlight: string;
 }
 
+/** スコアボード詳細（再編集用に試合へ保存） */
+export interface MatchScoreboardState {
+  ourInnings: number[];
+  theirInnings: number[];
+  ourErrors: number;
+  theirErrors: number;
+  theirHits: number;
+}
+
 export interface MatchRecord {
   id: string;
   match_date: string;
@@ -74,8 +83,22 @@ export interface MatchRecord {
   their_score: number;
   result: "勝" | "敗" | "分";
   players: PlayerAtBat[];
+  scoreboard?: MatchScoreboardState;
   created_at: string;
+  updated_at?: string;
   notes?: string;
+}
+
+/** AI読取・修正中の下書き */
+export interface MatchDraft {
+  matchId: string | null;
+  match_date: string;
+  opponent: string;
+  match_type: MatchType;
+  category: string;
+  players: PlayerAtBat[];
+  scoreboard: MatchScoreboardState;
+  updated_at: string;
 }
 
 export interface AppSettings {

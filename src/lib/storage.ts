@@ -1,8 +1,13 @@
 "use client";
 
-import { createId } from "./constants";
-import type { AppData, AppSettings, MatchRecord, RosterPlayer } from "./types";
-import { STORAGE_KEY } from "./constants";
+import { createId, DRAFT_STORAGE_KEY, STORAGE_KEY } from "./constants";
+import type {
+  AppData,
+  AppSettings,
+  MatchDraft,
+  MatchRecord,
+  RosterPlayer,
+} from "./types";
 import defaultRoster from "@/data/default-roster.json";
 
 export function defaultSettings(): AppSettings {
@@ -91,4 +96,27 @@ export function deleteMatch(data: AppData, matchId: string): AppData {
   const next = { ...data, matches: data.matches.filter((m) => m.id !== matchId) };
   saveAppData(next);
   return next;
+}
+
+export function loadMatchDraft(): MatchDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as MatchDraft;
+    if (!parsed || !Array.isArray(parsed.players)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function saveMatchDraft(draft: MatchDraft): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+}
+
+export function clearMatchDraft(): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(DRAFT_STORAGE_KEY);
 }

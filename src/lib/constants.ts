@@ -123,6 +123,24 @@ export const ANALYZE_MAX_PAYLOAD_BYTES = Math.floor(1.5 * 1024 * 1024);
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 
+/** 編集中試合のオートセーブ用 */
+export const DRAFT_STORAGE_KEY = "baseball-scorebook-draft-v1";
+
+/** 守備位置チップ */
+export const FIELD_POSITIONS = [
+  "投",
+  "捕",
+  "一",
+  "二",
+  "三",
+  "遊",
+  "左",
+  "中",
+  "右",
+  "指",
+  "代",
+] as const;
+
 export const MATCH_TYPES = ["公式戦", "練習試合", "紅白戦"] as const;
 
 export const CATEGORIES = ["低学年", "高学年", "混合", "その他"] as const;

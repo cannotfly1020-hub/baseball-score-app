@@ -9,19 +9,28 @@ export function HistoryTab({
   data,
   onDelete,
   onOpenRoster,
+  onEditMatch,
 }: {
   data: AppData;
   onDelete: (id: string) => void;
   onOpenRoster: () => void;
+  onEditMatch: (match: MatchRecord) => void;
 }) {
   const [selected, setSelected] = useState<MatchRecord | null>(null);
-  const matches = [...data.matches].sort((a, b) => b.match_date.localeCompare(a.match_date));
+  const matches = [...data.matches].sort((a, b) => {
+    const byDate = b.match_date.localeCompare(a.match_date);
+    if (byDate !== 0) return byDate;
+    return (b.updated_at || b.created_at).localeCompare(a.updated_at || a.created_at);
+  });
 
   return (
     <div className="fade-in">
       <div className="panel">
         <p className="section-label">HISTORY</p>
-        <h2 className="section-title">試合履歴＆出力</h2>
+        <h2 className="section-title">保存済みの試合を呼び出す</h2>
+        <p className="muted" style={{ marginBottom: 10 }}>
+          一覧から試合を選び、再編集・上書き保存・削除ができます。
+        </p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
@@ -36,14 +45,11 @@ export function HistoryTab({
             チーム名簿管理
           </button>
         </div>
-        <p className="muted" style={{ marginTop: 8 }}>
-          全試合明細・選手通算・選手別シートを含む .xlsx を出力します。
-        </p>
       </div>
 
       {matches.length === 0 ? (
         <div className="panel">
-          <p className="muted">保存済みの試合はまだありません。</p>
+          <p className="muted">保存済みの試合はまだありません。AI読取タブで解析して保存してください。</p>
         </div>
       ) : (
         matches.map((m) => (
@@ -53,6 +59,7 @@ export function HistoryTab({
                 <div style={{ fontWeight: 800 }}>vs {m.opponent}</div>
                 <div className="muted">
                   {m.match_date} · {m.match_type} · {m.category}
+                  {m.updated_at ? " · 再編集あり" : ""}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -62,7 +69,15 @@ export function HistoryTab({
                 <span className="badge">{m.result}</span>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1, minWidth: 120 }}
+                onClick={() => onEditMatch(m)}
+              >
+                呼び出して再編集
+              </button>
               <button type="button" className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setSelected(m)}>
                 詳細
               </button>
@@ -71,7 +86,7 @@ export function HistoryTab({
                 className="btn btn-outline"
                 style={{ flex: 1 }}
                 onClick={() => {
-                  if (confirm("この試合を削除しますか？")) onDelete(m.id);
+                  if (confirm("この試合を削除しますか？成績集計からも除外されます。")) onDelete(m.id);
                 }}
               >
                 削除
@@ -108,7 +123,8 @@ export function HistoryTab({
                   {selected.players.map((p, i) => (
                     <tr key={`${p.player_name}-${i}`}>
                       <td>
-                        {p.batting_order}.{p.player_name}
+                        {p.batting_order}.{p.position ? `${p.position} ` : ""}
+                        {p.player_name}
                       </td>
                       {INNING_KEYS.map((k) => (
                         <td
@@ -126,14 +142,27 @@ export function HistoryTab({
                 </tbody>
               </table>
             </div>
-            <button
-              type="button"
-              className="btn btn-navy"
-              style={{ width: "100%", marginTop: 12 }}
-              onClick={() => setSelected(null)}
-            >
-              閉じる
-            </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ flex: 1 }}
+                onClick={() => {
+                  setSelected(null);
+                  onEditMatch(selected);
+                }}
+              >
+                この試合を再編集
+              </button>
+              <button
+                type="button"
+                className="btn btn-navy"
+                style={{ flex: 1 }}
+                onClick={() => setSelected(null)}
+              >
+                閉じる
+              </button>
+            </div>
           </div>
         </div>
       ) : null}
