@@ -150,7 +150,7 @@ export function ScorePhotoPreview({
         </p>
       ) : null}
       <ImagePreview
-        key={`${activePage}-${active.colorUrl ? "ready" : "empty"}`}
+        // ページ切替・感度変更でもズーム／パンを維持するため key でアンマウントしない
         colorUrl={active.colorUrl}
         redUrl={active.redUrl}
         redSensitivity={active.redSensitivity}
