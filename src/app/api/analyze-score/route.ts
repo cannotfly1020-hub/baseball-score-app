@@ -133,17 +133,6 @@ function formatGeminiError(err: unknown, model?: string): string {
   return `Google AI エラー: ${raw}${modelHint}`;
 }
 
-/** File → Base64（中間 Buffer を長く保持しない） */
-async function fileToBase64(
-  file: File | null,
-): Promise<{ b64: string; bytes: number } | null> {
-  if (!file) return null;
-  const ab = await file.arrayBuffer();
-  const bytes = ab.byteLength;
-  const b64 = Buffer.from(ab).toString("base64");
-  return { b64, bytes };
-}
-
 function stripDataUrl(input?: string): string {
   return (input || "").replace(/^data:image\/\w+;base64,/, "");
 }
@@ -152,66 +141,31 @@ function b64ByteLength(b64: string): number {
   return Math.floor((b64.length * 3) / 4);
 }
 
+/**
+ * application/json のみ受付（FormData は Next.js 開発プロキシで切断されるため廃止）。
+ * メモリ上で Base64 を保持するだけで、一時ファイルやディスク書き込みは行わない。
+ */
 async function parseIncomingRequest(request: Request): Promise<ParsedRequest> {
   const contentType = request.headers.get("content-type") || "";
-
   if (contentType.includes("multipart/form-data")) {
-    const form = await request.formData();
-    const color = await fileToBase64(form.get("color") as File | null);
-    const red = await fileToBase64(form.get("red") as File | null);
-    const colorTop = await fileToBase64(form.get("colorTop") as File | null);
-    const colorBottom = await fileToBase64(form.get("colorBottom") as File | null);
-    const redTop = await fileToBase64(form.get("redTop") as File | null);
-    const redBottom = await fileToBase64(form.get("redBottom") as File | null);
-
-    if (!color || !red || !colorTop || !colorBottom || !redTop || !redBottom) {
-      throw Object.assign(
-        new Error("FormData に必要な画像（color/red/上下分割）が不足しています。"),
-        { status: 400 },
-      );
-    }
-
-    let roster: RosterPlayer[] = [];
-    try {
-      roster = JSON.parse(String(form.get("roster") || "[]"));
-    } catch {
-      roster = [];
-    }
-    let matchMeta: ParsedRequest["matchMeta"] = {};
-    try {
-      matchMeta = JSON.parse(String(form.get("matchMeta") || "{}"));
-    } catch {
-      matchMeta = {};
-    }
-
-    const dryRun =
-      String(form.get("dryRun") || "").toLowerCase() === "1" ||
-      String(form.get("dryRun") || "").toLowerCase() === "true";
-
-    const totalBytes =
-      color.bytes +
-      red.bytes +
-      colorTop.bytes +
-      colorBottom.bytes +
-      redTop.bytes +
-      redBottom.bytes;
-
-    return {
-      colorB64: color.b64,
-      redB64: red.b64,
-      colorTopB64: colorTop.b64,
-      colorBottomB64: colorBottom.b64,
-      redTopB64: redTop.b64,
-      redBottomB64: redBottom.b64,
-      totalBytes,
-      roster,
-      matchMeta,
-      apiKey: String(form.get("apiKey") || process.env.GEMINI_API_KEY || "").trim(),
-      dryRun,
-    };
+    throw Object.assign(
+      new Error(
+        "multipart/form-data は非対応です。application/json（Base64）で送信してください。",
+      ),
+      { status: 415 },
+    );
   }
 
-  const body = (await request.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    body = (await request.json()) as Record<string, unknown>;
+  } catch {
+    throw Object.assign(
+      new Error("JSON ボディの解析に失敗しました。Content-Type: application/json で再送してください。"),
+      { status: 400 },
+    );
+  }
+
   const toB64 = (v: unknown) => {
     const s = stripDataUrl(typeof v === "string" ? v : "");
     return s || null;
@@ -248,6 +202,16 @@ async function parseIncomingRequest(request: Request): Promise<ParsedRequest> {
     apiKey: String(body.apiKey || process.env.GEMINI_API_KEY || "").trim(),
     dryRun: Boolean(body.dryRun),
   };
+}
+
+/** 軽量ヘルスチェック（クライアントが本送信前に叩く） */
+export async function GET() {
+  return NextResponse.json({
+    ok: true,
+    service: "analyze-score",
+    accepts: "application/json",
+    maxPayloadBytes: ANALYZE_MAX_PAYLOAD_BYTES,
+  });
 }
 
 async function generateJsonFromParts(
@@ -348,7 +312,7 @@ export async function POST(request: Request) {
     if (parsed.totalBytes > ANALYZE_MAX_PAYLOAD_BYTES) {
       return jsonError(
         413,
-        `画像データが大きすぎます（合計 ${(parsed.totalBytes / (1024 * 1024)).toFixed(2)}MB）。1.2〜1.5MB以内に圧縮して再送してください。`,
+        `画像データが大きすぎます（合計 ${(parsed.totalBytes / 1024).toFixed(1)}KB）。上限 ${(ANALYZE_MAX_PAYLOAD_BYTES / 1024).toFixed(0)}KB 以内に圧縮して再送してください。`,
       );
     }
 

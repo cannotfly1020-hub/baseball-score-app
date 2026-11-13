@@ -7,13 +7,14 @@ const nextConfig: NextConfig = {
   // 127.0.0.1 / localhost からの HMR を許可（未設定だとハイドレーションが「読み込み中」で止まる）
   allowedDevOrigins: ["127.0.0.1", "localhost"],
   experimental: {
-    // FormData 画像送信 + 長時間 Gemini 解析
-    proxyClientMaxBodySize: "50mb",
+    // JSON Base64 画像送信 + 長時間 Gemini 解析（FormData 廃止）
+    proxyClientMaxBodySize: "10mb",
     proxyTimeout: 300_000, // 5分（旧60s切断が Failed to fetch の主因）
     serverActions: {
-      bodySizeLimit: "50mb",
+      bodySizeLimit: "10mb",
     },
   },
+  // Tailwind v4（Turbopack）。route は一時ファイルを書かないためウォッチャー再起動は発生しない。
   turbopack: {
     rules: {
       "*.css": {
