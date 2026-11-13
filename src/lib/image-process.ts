@@ -371,12 +371,16 @@ export async function prepareAnalyzeImages(
   return payload;
 }
 
+export type AnalyzePageHint = "single" | "first_half" | "second_half";
+
 /** 解析 API 用 FormData（巨大 JSON+Base64 を使わない） */
 export function buildAnalyzeFormData(args: {
   images: AnalyzeImagePayload;
   roster: unknown;
   matchMeta: { match_date?: string; opponent?: string };
   apiKey?: string;
+  /** 見開き2枚のうちどのページか（プロンプト誘導用） */
+  pageHint?: AnalyzePageHint;
 }): FormData {
   const fd = new FormData();
   fd.append("color", dataUrlToBlob(args.images.colorDataUrl), "color.jpg");
@@ -386,7 +390,13 @@ export function buildAnalyzeFormData(args: {
   fd.append("redTop", dataUrlToBlob(args.images.redTopDataUrl), "red-top.jpg");
   fd.append("redBottom", dataUrlToBlob(args.images.redBottomDataUrl), "red-bottom.jpg");
   fd.append("roster", JSON.stringify(args.roster ?? []));
-  fd.append("matchMeta", JSON.stringify(args.matchMeta ?? {}));
+  fd.append(
+    "matchMeta",
+    JSON.stringify({
+      ...(args.matchMeta ?? {}),
+      pageHint: args.pageHint || "single",
+    }),
+  );
   if (args.apiKey) fd.append("apiKey", args.apiKey);
   fd.append(
     "imageMeta",
@@ -394,6 +404,7 @@ export function buildAnalyzeFormData(args: {
       maxSide: args.images.maxSide,
       jpegQuality: args.images.jpegQuality,
       approxBytes: args.images.approxBytes,
+      pageHint: args.pageHint || "single",
     }),
   );
   return fd;

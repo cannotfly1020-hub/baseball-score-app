@@ -36,7 +36,11 @@ type ParsedRequest = {
   redTop: Buffer;
   redBottom: Buffer;
   roster: RosterPlayer[];
-  matchMeta: { match_date?: string; opponent?: string };
+  matchMeta: {
+    match_date?: string;
+    opponent?: string;
+    pageHint?: "single" | "first_half" | "second_half";
+  };
   apiKey: string;
 };
 
@@ -160,7 +164,7 @@ async function parseIncomingRequest(request: Request): Promise<ParsedRequest> {
     } catch {
       roster = [];
     }
-    let matchMeta: { match_date?: string; opponent?: string } = {};
+    let matchMeta: ParsedRequest["matchMeta"] = {};
     try {
       matchMeta = JSON.parse(String(form.get("matchMeta") || "{}"));
     } catch {
@@ -373,6 +377,7 @@ export async function POST(request: Request) {
           toOrder: group.to,
           roster: parsed.roster,
           rosterHints: rosterExtracted,
+          pageHint: parsed.matchMeta.pageHint || "single",
         });
 
         const result = await generateWithFallback(

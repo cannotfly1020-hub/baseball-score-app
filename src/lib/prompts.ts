@@ -206,6 +206,8 @@ export function buildGroupDetailsPrompt(args: {
   toOrder: number;
   roster: RosterPlayer[];
   rosterHints?: Array<{ batting_order: number; player_name: string; uniform_number: string }>;
+  /** 見開き2枚セット時のページ役割 */
+  pageHint?: "single" | "first_half" | "second_half";
 }): string {
   const rosterBlock = formatRosterLines(args.roster);
   const hintLines =
@@ -214,6 +216,21 @@ export function buildGroupDetailsPrompt(args: {
       .map((h) => `・${h.batting_order}番: ${h.player_name}（背番号:${h.uniform_number || "-"}）`)
       .join("\n") || "・（事前ヒントなし。画像左端と名簿から確定）";
 
+  const pageHintBlock =
+    args.pageHint === "first_half"
+      ? `
+### ページ役割（見開き1枚目・前半）
+- この画像は主に **1〜4回前後** が記入された左ページ／前半ページです。
+- 後半イニング（5〜7回）のマスが印刷枠のみで空白なら \`"なし"\`。推測で埋めないこと。
+- このページに実際に書かれているイニングだけを正確に読み取る。`
+      : args.pageHint === "second_half"
+        ? `
+### ページ役割（見開き2枚目・後半）
+- この画像は主に **5〜7回前後（延長含む）** が記入された右ページ／後半ページです。
+- 前半イニング（1〜4回）が空白なら \`"なし"\`。前半ページの内容を推測して埋めないこと。
+- 代打・代走・守備交代の二段書きがあれば is_substitute:true で出力する。`
+        : "";
+
   return `
 ${IMAGE_ROLES_PROMPT}
 
@@ -221,6 +238,7 @@ ${IMAGE_ROLES_PROMPT}
 あなたは早稲田式スコアブックの「打順 ${args.fromOrder}〜${args.toOrder} 番」グループを精密に読む専門AIです。
 提供画像: (1)全体俯瞰の原本・赤強調 (2)このグループを拡大した原本・赤強調。
 **細かい黒文字と赤ペンはグループ拡大画像から読み取り**、俯瞰は位置確認の参考のみ。
+${pageHintBlock}
 
 ### 登録済みチーム名簿（選手名はこの一覧へ自動照合すること）
 ${rosterBlock}
