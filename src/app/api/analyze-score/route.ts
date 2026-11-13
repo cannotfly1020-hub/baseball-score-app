@@ -1,12 +1,10 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
+import { BATTING_ROW_COUNT, emptyInnings, normalizeResult } from "@/lib/constants";
 import {
-  BATTING_ROW_COUNT,
-  DEFAULT_GEMINI_MODEL,
-  GEMINI_MODEL_CANDIDATES,
-  emptyInnings,
-  normalizeResult,
-} from "@/lib/constants";
+  isModelUnavailableError,
+  resolveGeminiModelCandidates,
+} from "@/lib/gemini-models";
 import { buildRosterPrompt, buildRowDetailsPrompt } from "@/lib/prompts";
 import { applyRosterMatching } from "@/lib/roster-match";
 import { makeOverviewThumb, sliceBattingRows } from "@/lib/row-slice";
@@ -53,13 +51,6 @@ function parseJsonArray(text: string): unknown[] {
   throw new Error("AI応答のJSON解析に失敗しました。もう一度お試しください。");
 }
 
-function isModelUnavailableError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err);
-  return /NOT_FOUND|not found|is not found|unsupported|does not exist|model.*unavailable|invalid model/i.test(
-    msg,
-  );
-}
-
 function formatGeminiError(err: unknown, model?: string): string {
   const raw = err instanceof Error ? err.message : String(err);
   const modelHint = model ? `（モデル: ${model}）` : "";
@@ -104,11 +95,23 @@ async function generateJsonFromParts(
 async function generateWithFallback(
   ai: GoogleGenAI,
   parts: ContentPart[],
-  preferredModel?: string,
+  options?: {
+    preferredModel?: string;
+    /** リクエスト内で models.list 結果を再利用 */
+    candidateCache?: { list?: string[] };
+  },
 ): Promise<{ text: string; parsed: unknown[]; model: string }> {
-  const candidates = [preferredModel, ...GEMINI_MODEL_CANDIDATES, DEFAULT_GEMINI_MODEL].filter(
-    (m, i, arr): m is string => Boolean(m) && arr.indexOf(m) === i,
-  );
+  const preferredModel = options?.preferredModel;
+  const cache = options?.candidateCache;
+  let candidates = cache?.list;
+  if (!candidates || candidates.length === 0) {
+    candidates = await resolveGeminiModelCandidates(ai, preferredModel);
+    if (cache) cache.list = candidates;
+    console.info("[analyze-score] model candidates:", candidates.slice(0, 12).join(" → "));
+  } else if (preferredModel) {
+    // 成功モデルを先頭に寄せる
+    candidates = [preferredModel, ...candidates.filter((m) => m !== preferredModel)];
+  }
 
   let lastError: unknown;
   for (const model of candidates) {
@@ -119,6 +122,8 @@ async function generateWithFallback(
       lastError = err;
       console.warn(`[analyze-score] model failed: ${model}`, err);
       if (isModelUnavailableError(err)) continue;
+      // 空応答は次モデルへ（thinking モデルの一時失敗など）
+      if (/空の応答/i.test(err instanceof Error ? err.message : String(err))) continue;
       throw new Error(formatGeminiError(err, model));
     }
   }
@@ -213,19 +218,24 @@ export async function POST(request: Request) {
     const roster: RosterPlayer[] = Array.isArray(body.roster) ? body.roster : [];
     const mimeType = body.mimeType || "image/jpeg";
     const ai = new GoogleGenAI({ apiKey });
+    const candidateCache: { list?: string[] } = {};
 
     // Step 1: 全体俯瞰で名簿抽出
-    const step1 = await generateWithFallback(ai, [
-      { text: buildRosterPrompt(roster) },
-      {
-        text: "【全体原本】左端の打順・背番号・選手名の抽出用（高解像度カラー原本）。",
-      },
-      { inlineData: { mimeType, data: colorImageBase64 } },
-      {
-        text: "【全体赤強調】位置合わせの参考。名簿抽出は原本を優先すること。",
-      },
-      { inlineData: { mimeType, data: redImageBase64 } },
-    ]);
+    const step1 = await generateWithFallback(
+      ai,
+      [
+        { text: buildRosterPrompt(roster) },
+        {
+          text: "【全体原本】左端の打順・背番号・選手名の抽出用（高解像度カラー原本）。",
+        },
+        { inlineData: { mimeType, data: colorImageBase64 } },
+        {
+          text: "【全体赤強調】位置合わせの参考。名簿抽出は原本を優先すること。",
+        },
+        { inlineData: { mimeType, data: redImageBase64 } },
+      ],
+      { candidateCache },
+    );
 
     const rosterExtracted = applyRosterMatching(
       step1.parsed.map((row) => {
@@ -283,7 +293,7 @@ export async function POST(request: Request) {
           },
           { inlineData: { mimeType: redRow.mimeType, data: redRow.base64 } },
         ],
-        step1.model,
+        { preferredModel: step1.model, candidateCache },
       );
 
       const players = applyRosterMatching(

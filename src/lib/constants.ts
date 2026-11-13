@@ -83,12 +83,21 @@ export const TOTAL_BASES_VALUE: Partial<Record<ResultLabel, number>> = {
 
 export const INNING_KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;
 
-/** 精度優先。先頭から試し、モデル未対応時は次へフォールバック */
+/**
+ * 精度優先の静的候補。先頭から試し、404/廃止時は次へフォールバック。
+ * 実行時は models.list で利用可能モデルを動的検出して追記する（gemini-models.ts）。
+ */
 export const GEMINI_MODEL_CANDIDATES = [
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
+  "gemini-3.5-pro",
+  "gemini-3.0-pro",
+  "gemini-pro-latest",
+  "gemini-3.5-flash",
+  "gemini-3.0-flash",
   "gemini-flash-latest",
-  "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash",
 ] as const;
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
