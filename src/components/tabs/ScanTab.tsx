@@ -11,6 +11,11 @@ import {
 import { useDualPageImages } from "@/hooks/useDualPageImages";
 import { useMatchEditor } from "@/hooks/useMatchEditor";
 import { analyzeScorePage } from "@/lib/analyze-client";
+import {
+  formatAnalyzeUsageLine,
+  mergeAnalyzeUsageMeta,
+  type AnalyzeUsageMeta,
+} from "@/lib/analyze-meta";
 import type { AnalyzePageHint } from "@/lib/image-process";
 import { mergeScorebookPages } from "@/lib/page-merge";
 import { countNeedsReview } from "@/lib/stats";
@@ -40,6 +45,7 @@ export function ScanTab({
   const [analyzing, setAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [usageMeta, setUsageMeta] = useState<AnalyzeUsageMeta | null>(null);
   const [photoCompareOpen, setPhotoCompareOpen] = useState(false);
   const [toast, setToast] = useState("");
 
@@ -74,6 +80,7 @@ export function ScanTab({
 
     setAnalyzing(true);
     setError("");
+    setUsageMeta(null);
     try {
       const dual = pages.hasPage2;
       const firstHint: AnalyzePageHint = dual ? "first_half" : "single";
@@ -99,6 +106,15 @@ export function ScanTab({
           apiKey: data.settings.geminiApiKey || undefined,
           onStatus: setStatus,
         });
+      }
+
+      const mergedMeta = mergeAnalyzeUsageMeta([
+        page1Result.meta,
+        page2Result?.meta,
+      ]);
+      setUsageMeta(mergedMeta);
+      if (mergedMeta) {
+        console.info("[ScanTab] analyze usage meta", mergedMeta);
       }
 
       const merged = mergeScorebookPages(
@@ -212,6 +228,7 @@ export function ScanTab({
           onAnalyze={() => void analyze()}
           error={error}
           status={status}
+          usageLine={usageMeta ? formatAnalyzeUsageLine(usageMeta) : ""}
           showPreview={false}
         />
       </div>

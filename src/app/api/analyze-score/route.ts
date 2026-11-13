@@ -275,11 +275,77 @@ export async function GET(request: Request) {
   });
 }
 
+/** Gemini usageMetadata 集計（プロンプト／スキーマは変更しない） */
+export type TokenUsage = {
+  promptTokenCount: number;
+  candidatesTokenCount: number;
+  thoughtsTokenCount: number;
+  totalTokenCount: number;
+};
+
+function emptyUsage(): TokenUsage {
+  return {
+    promptTokenCount: 0,
+    candidatesTokenCount: 0,
+    thoughtsTokenCount: 0,
+    totalTokenCount: 0,
+  };
+}
+
+function readUsage(response: {
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}): TokenUsage {
+  const u = response.usageMetadata || {};
+  const prompt = Number(u.promptTokenCount) || 0;
+  const candidates = Number(u.candidatesTokenCount) || 0;
+  const thoughts = Number(u.thoughtsTokenCount) || 0;
+  const total =
+    Number(u.totalTokenCount) || prompt + candidates + thoughts;
+  return {
+    promptTokenCount: prompt,
+    candidatesTokenCount: candidates,
+    thoughtsTokenCount: thoughts,
+    totalTokenCount: total,
+  };
+}
+
+function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    promptTokenCount: a.promptTokenCount + b.promptTokenCount,
+    candidatesTokenCount: a.candidatesTokenCount + b.candidatesTokenCount,
+    thoughtsTokenCount: a.thoughtsTokenCount + b.thoughtsTokenCount,
+    totalTokenCount: a.totalTokenCount + b.totalTokenCount,
+  };
+}
+
+/**
+ * 概算原価（円）。Gemini API の公開価格帯に基づく概算。
+ * Flash: 入力 $0.30/1M・出力(候補+思考) $2.50/1M
+ * Pro/argon 系: 入力 $1.25/1M・出力 $10/1M
+ * USDJPY 概算 150。
+ */
+function estimateCostYen(model: string, usage: TokenUsage): number {
+  const isProLike = /pro|argon|carbon|hydrogen/i.test(model) && !/flash/i.test(model);
+  const inPerM = isProLike ? 1.25 : 0.3;
+  const outPerM = isProLike ? 10 : 2.5;
+  const usdJpy = 150;
+  const usd =
+    (usage.promptTokenCount / 1_000_000) * inPerM +
+    ((usage.candidatesTokenCount + usage.thoughtsTokenCount) / 1_000_000) * outPerM;
+  return Math.round(usd * usdJpy * 100) / 100;
+}
+
 async function generateJsonFromParts(
   ai: GoogleGenAI,
   model: string,
   parts: ContentPart[],
-): Promise<{ text: string; parsed: unknown[] }> {
+): Promise<{ text: string; parsed: unknown[]; usage: TokenUsage; elapsedMs: number }> {
+  const t0 = Date.now();
   const response = await ai.models.generateContent({
     model,
     contents: [{ role: "user", parts }],
@@ -291,7 +357,12 @@ async function generateJsonFromParts(
 
   const text = response.text ?? "";
   if (!text) throw new Error("AIから空の応答が返りました");
-  return { text, parsed: parseJsonArray(text) };
+  const usage = readUsage(response);
+  const elapsedMs = Date.now() - t0;
+  console.info(
+    `[analyze-score] generateContent model=${model} elapsedMs=${elapsedMs} usage=${JSON.stringify(usage)}`,
+  );
+  return { text, parsed: parseJsonArray(text), usage, elapsedMs };
 }
 
 async function generateWithFallback(
@@ -301,7 +372,7 @@ async function generateWithFallback(
     preferredModel?: string;
     candidateCache?: { list?: string[] };
   },
-): Promise<{ text: string; parsed: unknown[]; model: string }> {
+): Promise<{ text: string; parsed: unknown[]; model: string; usage: TokenUsage }> {
   const preferredModel = options?.preferredModel;
   const cache = options?.candidateCache;
   let candidates = cache?.list;
@@ -364,6 +435,8 @@ async function runAnalyzePipeline(
   const mimeType = "image/jpeg";
   const ai = new GoogleGenAI({ apiKey: parsed.apiKey });
   const candidateCache: { list?: string[] } = {};
+  let usageTotal = emptyUsage();
+  const callUsages: Array<{ step: string; model: string; usage: TokenUsage }> = [];
 
   onStage?.("roster");
   console.info(
@@ -381,7 +454,11 @@ async function runAnalyzePipeline(
     ],
     { candidateCache },
   );
-  console.info(`[analyze-score] step1 done model=${step1.model} t=${Date.now() - t0}ms`);
+  usageTotal = addUsage(usageTotal, step1.usage);
+  callUsages.push({ step: "roster", model: step1.model, usage: step1.usage });
+  console.info(
+    `[analyze-score] step1 done model=${step1.model} t=${Date.now() - t0}ms usage=${JSON.stringify(step1.usage)}`,
+  );
 
   const rosterExtracted = applyRosterMatching(
     step1.parsed.map((row) => {
@@ -401,6 +478,7 @@ async function runAnalyzePipeline(
     players: PlayerAtBat[];
     raw: unknown[];
     model: string;
+    usage: TokenUsage;
     aiInningScores: number[] | null;
   }> = [];
 
@@ -431,8 +509,10 @@ async function runAnalyzePipeline(
       ],
       { preferredModel: step1.model, candidateCache },
     );
+    usageTotal = addUsage(usageTotal, result.usage);
+    callUsages.push({ step: group.id, model: result.model, usage: result.usage });
     console.info(
-      `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms`,
+      `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms usage=${JSON.stringify(result.usage)}`,
     );
 
     const playerRows = extractPlayersFromAiPayload(result.parsed);
@@ -447,6 +527,7 @@ async function runAnalyzePipeline(
       players,
       raw: result.parsed,
       model: result.model,
+      usage: result.usage,
       aiInningScores: extractAiInningScores(result.parsed),
     });
   }
@@ -499,8 +580,32 @@ async function runAnalyzePipeline(
       : null;
   const reconciled = reconcileInningScores(players, mergedAiScores);
 
+  const elapsedMs = Date.now() - t0;
+  const model = groupResults[0]?.model || step1.model;
+  const estimatedCostYen = estimateCostYen(model, usageTotal);
+  const meta = {
+    model,
+    modelsUsed: callUsages.map((c) => c.model),
+    elapsedMs,
+    elapsedSec: Math.round((elapsedMs / 1000) * 10) / 10,
+    promptTokenCount: usageTotal.promptTokenCount,
+    candidatesTokenCount: usageTotal.candidatesTokenCount,
+    thoughtsTokenCount: usageTotal.thoughtsTokenCount,
+    totalTokenCount: usageTotal.totalTokenCount,
+    usageMetadata: usageTotal,
+    estimatedCostYen,
+    estimatedCostNote:
+      "概算（Flash: 入力$0.30/1M・出力$2.50/1M、Pro系: $1.25/$10、USDJPY=150）。公式請求と異なる場合あり。",
+    calls: callUsages,
+  };
+
   console.info(
-    `[analyze-score] pipeline done players=${players.length} t=${Date.now() - t0}ms`,
+    `[analyze-score] pipeline done players=${players.length} t=${elapsedMs}ms meta=${JSON.stringify({
+      model: meta.model,
+      elapsedSec: meta.elapsedSec,
+      usageMetadata: meta.usageMetadata,
+      estimatedCostYen: meta.estimatedCostYen,
+    })}`,
   );
 
   return {
@@ -508,16 +613,21 @@ async function runAnalyzePipeline(
     players,
     match_date,
     opponent,
-    model: groupResults[0]?.model || step1.model,
+    model,
     pipeline: "async-job+serial-roster+upper/lower-relay",
     bytesReceived: parsed.totalBytes,
-    elapsedMs: Date.now() - t0,
+    elapsedMs,
+    meta,
     inningScores: reconciled.ourInnings,
     inningScoresMatched: reconciled.matched,
     aiInningScores: reconciled.aiInningScores,
     raw: {
       step1: step1.parsed,
-      groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
+      groups: groupResults.map((g) => ({
+        group: g.group,
+        raw: g.raw,
+        usage: g.usage,
+      })),
     },
   };
 }
