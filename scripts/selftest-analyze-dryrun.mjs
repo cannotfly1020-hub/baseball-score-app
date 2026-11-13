@@ -39,7 +39,7 @@ function buildJsonBody(totalImageBytes = 800 * 1024) {
     matchMeta: { match_date: "2026-01-01", opponent: "dryrun", pageHint: "single" },
     dryRun: true,
     imageMeta: {
-      maxSide: 1400,
+      maxSide: 1150,
       jpegQuality: 0.76,
       approxBytes: totalImageBytes,
       pageHint: "single",

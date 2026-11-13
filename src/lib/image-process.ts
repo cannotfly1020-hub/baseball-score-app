@@ -1,6 +1,6 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
- * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1400px）
+ * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1150px）
  * 2) 赤強調画像（線の細さを保ったまま赤ペン彩度を上げる）
  * 解析送信は application/json + Base64（合計 ≤900KB）。FormData は使わない。
  * サーバ側は画像加工せず Base64 中継のみ。
@@ -299,7 +299,7 @@ export function dataUrlToBlob(dataUrl: string, mime = "image/jpeg"): Blob {
 
 /**
  * 全体俯瞰＋上下2分割を用意し、合計 ≤900KB に収める。
- * 長辺最大 1400px・JPEG 品質 0.76 から段階的に下げる。
+ * 長辺最大 1150px・JPEG 品質 0.76 から段階的に下げる。
  */
 export async function prepareAnalyzeImages(
   colorDataUrl: string,
@@ -310,7 +310,8 @@ export async function prepareAnalyzeImages(
   const hardMax = ANALYZE_MAX_PAYLOAD_BYTES;
   const qualitySteps = [IMAGE_JPEG_QUALITY, 0.7, 0.64, 0.58, 0.5, 0.42];
   const overviewSides = [1000, 900, 800, 700, 600];
-  const halfSides = [IMAGE_MAX_SIDE, 1200, 1000, 900, 800, 700];
+  // IMAGE_MAX_SIDE(1150) を上限とし、収まらなければ段階的に縮小
+  const halfSides = [IMAGE_MAX_SIDE, 1000, 900, 800, 700];
 
   let lastPayload: AnalyzeImagePayload | null = null;
 

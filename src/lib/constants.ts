@@ -113,7 +113,7 @@ export const BATTING_GROUP_SPLITS = [
 export const BATTING_ROW_COUNT = 9;
 
 /** Canvas 前処理／解析送信用の長辺上限 */
-export const IMAGE_MAX_SIDE = 1400;
+export const IMAGE_MAX_SIDE = 1150;
 
 /** JPEG 出力品質（0–1）— 解析 JSON 送信用の標準 */
 export const IMAGE_JPEG_QUALITY = 0.76;
