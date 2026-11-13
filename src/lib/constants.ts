@@ -105,11 +105,14 @@ export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
 /** 打順行スライス数（早稲田式の標準打順） */
 export const BATTING_ROW_COUNT = 9;
 
-/** Canvas 前処理時の長辺上限（小さな黒文字判読のため高めに設定） */
-export const IMAGE_MAX_SIDE = 2500;
+/** Canvas 前処理時の長辺上限（API送信サイズと判読のバランス） */
+export const IMAGE_MAX_SIDE = 1800;
 
 /** JPEG 出力品質（0–1） */
-export const IMAGE_JPEG_QUALITY = 0.9;
+export const IMAGE_JPEG_QUALITY = 0.85;
+
+/** AI解析へ送る画像の合計バイト上限（base64デコード後の概算） */
+export const ANALYZE_MAX_PAYLOAD_BYTES = 3 * 1024 * 1024;
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 
