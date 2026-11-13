@@ -21,6 +21,8 @@ export function ScorePhotoUploader({
   hasPage2,
   canAnalyze,
   analyzing,
+  analyzeElapsedSec = 0,
+  analyzeStage = "",
   onPickFile,
   onClearPage,
   onSensitivityChange,
@@ -37,6 +39,10 @@ export function ScorePhotoUploader({
   hasPage2: boolean;
   canAnalyze: boolean;
   analyzing: boolean;
+  /** 解析開始からの経過秒（リアルタイム） */
+  analyzeElapsedSec?: number;
+  /** 進行ステップ（roster / upper / lower 等） */
+  analyzeStage?: string;
   onPickFile: (page: PageSlotId, file: File) => void;
   onClearPage: (page: PageSlotId) => void;
   onSensitivityChange: (page: PageSlotId, value: RedSensitivity) => void;
@@ -97,12 +103,36 @@ export function ScorePhotoUploader({
         </button>
       </div>
 
+      {analyzing ? (
+        <p
+          className="muted"
+          style={{ marginTop: -4, marginBottom: 10, fontSize: 13, lineHeight: 1.5 }}
+          data-testid="analyze-progress"
+          aria-live="polite"
+        >
+          AIがスコアブックを精密解析中…（経過: {analyzeElapsedSec}秒）
+          {analyzeStage ? (
+            <>
+              <br />
+              <span style={{ fontSize: 12, opacity: 0.85 }}>
+                進行: {analyzeStage}
+              </span>
+            </>
+          ) : null}
+        </p>
+      ) : null}
+
       {error ? (
         <div className="alert-error" role="alert">
           {error}
         </div>
       ) : null}
-      {status ? <p className="muted">{status}</p> : null}
+      {status && !analyzing ? <p className="muted">{status}</p> : null}
+      {status && analyzing ? (
+        <p className="muted" style={{ fontSize: 12, marginTop: -4 }}>
+          {status}
+        </p>
+      ) : null}
       {usageLine ? (
         <p
           className="muted"
