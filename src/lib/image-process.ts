@@ -1,9 +1,8 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
- * 1) 鮮鋭化・コントラスト補正したカラー原本
+ * 1) 加工なし高解像度カラー原本（リサイズのみ・黒文字判読用）
  * 2) 線の細さ・筆圧の濃淡を保ったまま、赤みのある画素の G/B だけを
- *    引き下げて彩度・コントラストを自然に上げた解析用画像
- *    （単色ベタ塗り・膨張は行わない）
+ *    引き下げて彩度を自然に上げた解析用画像（単色ベタ塗り・膨張なし）
  */
 
 import { IMAGE_JPEG_QUALITY, IMAGE_MAX_SIDE } from "./constants";
@@ -15,10 +14,10 @@ export interface ProcessedImages {
   height: number;
 }
 
-/** 感度 0（加工なし）〜 100（最大強調）。標準は 50 */
+/** 感度 0（加工なし）〜 100（最大強調）。赤が浮かび黒文字も潰れない初期値 */
 export type RedSensitivity = number;
 
-export const DEFAULT_RED_SENSITIVITY = 50;
+export const DEFAULT_RED_SENSITIVITY = 45;
 
 export interface ProcessOptions {
   maxSide?: number;
@@ -99,45 +98,7 @@ export function extractRed(
   return imageData;
 }
 
-/** コントラスト・シャープネス強調 */
-function enhanceColor(imageData: ImageData): ImageData {
-  const data = imageData.data;
-  const contrast = 1.4;
-  const factor = ((259 * (contrast * 128 + 255)) / 255) * (259 - contrast * 128);
-  for (let i = 0; i < data.length; i += 4) {
-    data[i] = clamp(factor * (data[i] - 128) + 128);
-    data[i + 1] = clamp(factor * (data[i + 1] - 128) + 128);
-    data[i + 2] = clamp(factor * (data[i + 2] - 128) + 128);
-  }
-  return sharpen(imageData, 0.55);
-}
-
-/** 簡易シャープネス（アンシャープマスク風） */
-function sharpen(imageData: ImageData, amount: number): ImageData {
-  const { width, height, data } = imageData;
-  const copy = new Uint8ClampedArray(data);
-  const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
-
-  for (let y = 1; y < height - 1; y++) {
-    for (let x = 1; x < width - 1; x++) {
-      for (let c = 0; c < 3; c++) {
-        let sum = 0;
-        let ki = 0;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
-            const idx = ((y + ky) * width + (x + kx)) * 4 + c;
-            sum += copy[idx] * kernel[ki++];
-          }
-        }
-        const idx = (y * width + x) * 4 + c;
-        data[idx] = clamp(copy[idx] * (1 - amount) + sum * amount);
-      }
-    }
-  }
-  return imageData;
-}
-
-/** 長辺を maxSide にリサイズ（API送信サイズ抑制） */
+/** 長辺を maxSide にリサイズ（小さな黒文字判読と API 送信のバランス） */
 function fitSize(w: number, h: number, maxSide = IMAGE_MAX_SIDE) {
   const side = Math.max(w, h);
   if (side <= maxSide) return { width: w, height: h };
@@ -183,22 +144,20 @@ export async function processScorebookImage(
 ): Promise<ProcessedImages> {
   const jpegQuality = options?.jpegQuality ?? IMAGE_JPEG_QUALITY;
   const redSensitivity = options?.redSensitivity ?? DEFAULT_RED_SENSITIVITY;
-  const { ctx, width, height } = await drawSourceToCanvas(source, options);
+  const { canvas, ctx, width, height } = await drawSourceToCanvas(source, options);
 
+  // 1枚目: 色加工なしの高解像度カラー原本（リサイズ＋JPEGのみ）
+  const colorDataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
+
+  // 2枚目: 同一解像度から赤強調のみ適用
   const base = ctx.getImageData(0, 0, width, height);
-
-  const colorData = new ImageData(new Uint8ClampedArray(base.data), width, height);
-  enhanceColor(colorData);
-  const { canvas: colorCanvas, ctx: colorCtx } = createCanvas(width, height);
-  colorCtx.putImageData(colorData, 0, 0);
-
   const redData = new ImageData(new Uint8ClampedArray(base.data), width, height);
   extractRed(redData, redSensitivity);
   const { canvas: redCanvas, ctx: redCtx } = createCanvas(width, height);
   redCtx.putImageData(redData, 0, 0);
 
   return {
-    colorDataUrl: colorCanvas.toDataURL("image/jpeg", jpegQuality),
+    colorDataUrl,
     redDataUrl: redCanvas.toDataURL("image/jpeg", jpegQuality),
     width,
     height,

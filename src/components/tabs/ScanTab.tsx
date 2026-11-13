@@ -47,7 +47,7 @@ export function ScanTab({
   const skipNextSensitivityEffect = useRef(false);
 
   const onFile = async (file: File) => {
-    setStatus("画像を前処理中（長辺1600pxへ自動圧縮）…");
+    setStatus("画像を前処理中（長辺2500px・高解像度）…");
     setError("");
     setSavedMatch(null);
     setSourceFile(file);
@@ -117,7 +117,7 @@ export function ScanTab({
       const colorB64 = dataUrlToBase64(colorUrl);
       const redB64 = dataUrlToBase64(redUrl);
       const approxKb = Math.round(((colorB64.length + redB64.length) * 0.75) / 1024);
-      if (approxKb > 9000) {
+      if (approxKb > 14000) {
         setError(
           `画像データが大きすぎます（約 ${approxKb}KB）。別の写真で撮り直してください。`,
         );
