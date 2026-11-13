@@ -26,6 +26,6 @@ npm run dev
 
 ## 技術メモ
 
-- API: `POST /api/analyze-score`（`@google/genai` / 既定 `gemini-2.5-flash`、未対応時は自動フォールバック）
+- API: `POST /api/analyze-score`（`@google/genai` / 既定 `gemini-2.5-pro`、打順ごと拡大スライス解析）
 - Excel: `xlsx` ライブラリ
 - データ: 端末内 `localStorage`（キー `baseball-scorebook-v1`）

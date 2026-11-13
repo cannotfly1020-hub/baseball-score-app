@@ -83,15 +83,18 @@ export const TOTAL_BASES_VALUE: Partial<Record<ResultLabel, number>> = {
 
 export const INNING_KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;
 
-/** 安定・高速寄りの候補。先頭から試し、モデル未対応時は次へフォールバック */
+/** 精度優先。先頭から試し、モデル未対応時は次へフォールバック */
 export const GEMINI_MODEL_CANDIDATES = [
+  "gemini-2.5-pro",
   "gemini-2.5-flash",
   "gemini-flash-latest",
   "gemini-2.5-flash-lite",
-  "gemini-3.5-flash-lite",
 ] as const;
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
+
+/** 打順行スライス数（早稲田式の標準打順） */
+export const BATTING_ROW_COUNT = 9;
 
 /** Canvas 前処理時の長辺上限（小さな黒文字判読のため高めに設定） */
 export const IMAGE_MAX_SIDE = 2500;

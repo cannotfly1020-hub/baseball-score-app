@@ -112,7 +112,7 @@ export function ScanTab({
 
     setAnalyzing(true);
     setError("");
-    setStatus("Gemini で2段階解析中…（名簿 → 打席）");
+    setStatus("Gemini 2.5 Pro で解析中…（名簿 → 打順ごと拡大読取）");
     try {
       const colorB64 = dataUrlToBase64(colorUrl);
       const redB64 = dataUrlToBase64(redUrl);
