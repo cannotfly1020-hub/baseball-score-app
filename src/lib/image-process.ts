@@ -1,8 +1,9 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
  * 1) 鮮鋭化・コントラスト補正したカラー原本
- * 2) 枠線・黒文字を残しつつ、赤ペン（明るい赤＋黒線上の暗い赤茶色）を
- *    クリムゾンレッド (#DC2626) にブーストした解析用画像
+ * 2) 線の細さ・筆圧の濃淡を保ったまま、赤みのある画素の G/B だけを
+ *    引き下げて彩度・コントラストを自然に上げた解析用画像
+ *    （単色ベタ塗り・膨張は行わない）
  */
 
 import { IMAGE_JPEG_QUALITY, IMAGE_MAX_SIDE } from "./constants";
@@ -14,28 +15,17 @@ export interface ProcessedImages {
   height: number;
 }
 
-/** 感度 0（弱）〜 100（強）。標準は 50 */
+/** 感度 0（加工なし）〜 100（最大強調）。標準は 50 */
 export type RedSensitivity = number;
 
 export const DEFAULT_RED_SENSITIVITY = 50;
-
-/** 強調先のクリムゾンレッド */
-export const CRIMSON_R = 0xdc;
-export const CRIMSON_G = 0x26;
-export const CRIMSON_B = 0x26;
 
 export interface ProcessOptions {
   maxSide?: number;
   rotationDeg?: number;
   jpegQuality?: number;
-  /** 赤ブーストの感度 0–100 */
+  /** 赤強調の強度 0–100（0=原本） */
   redSensitivity?: RedSensitivity;
-}
-
-interface Hsv {
-  h: number; // 0–360
-  s: number; // 0–1
-  v: number; // 0–1
 }
 
 function loadImage(file: Blob | string): Promise<HTMLImageElement> {
@@ -64,131 +54,47 @@ function clamp(n: number): number {
   return Math.max(0, Math.min(255, Math.round(n)));
 }
 
-function clamp01(n: number): number {
-  return Math.max(0, Math.min(1, n));
-}
-
-/** RGB → HSV */
-export function rgbToHsv(r: number, g: number, b: number): Hsv {
-  const rn = r / 255;
-  const gn = g / 255;
-  const bn = b / 255;
-  const max = Math.max(rn, gn, bn);
-  const min = Math.min(rn, gn, bn);
-  const d = max - min;
-  let h = 0;
-  if (d > 1e-6) {
-    if (max === rn) h = ((gn - bn) / d) % 6;
-    else if (max === gn) h = (bn - rn) / d + 2;
-    else h = (rn - gn) / d + 4;
-    h *= 60;
-    if (h < 0) h += 360;
-  }
-  const s = max <= 1e-6 ? 0 : d / max;
-  return { h, s, v: max };
-}
-
-/** 色相が赤〜オレンジ／マゼンタ寄りか */
-function inRedHueRange(h: number): boolean {
-  return h <= 45 || h >= 300;
-}
-
 /**
- * 感度に応じた「R が G/B よりどれだけ上回れば赤とみなすか」の下限。
- * 強: 3 / 標準: 6 / 弱: 12
+ * 感度 0–100 → G/B の残存率（1=変更なし、小さいほど赤く見える）。
+ * 0 → 1.00（原本） / 50 → 約 0.54 / 100 → 約 0.08
  */
-function minRedDominance(sensitivity: RedSensitivity): number {
-  const s = Math.max(0, Math.min(100, sensitivity));
-  return 12 - (s / 100) * 9;
+function gbKeepFactor(sensitivity: RedSensitivity): number {
+  const t = Math.max(0, Math.min(100, sensitivity)) / 100;
+  return 1 - t * 0.92;
 }
 
 /**
- * 赤ペン判定（明るい赤 + 黒菱形上の暗い赤茶色まで）。
- * - 黒ボールペン／印刷のニュートラルな黒・グレーは除外
- * - R が G/B よりわずかでも上回る暗い赤茶色、または赤〜オレンジ〜マゼンタ色相を拾う
- */
-export function isRedPenPixel(
-  r: number,
-  g: number,
-  b: number,
-  sensitivity: RedSensitivity = DEFAULT_RED_SENSITIVITY,
-): boolean {
-  const { h, s, v } = rgbToHsv(r, g, b);
-  const dom = r - Math.max(g, b);
-  const chroma = Math.max(r, g, b) - Math.min(r, g, b);
-  const minDom = minRedDominance(sensitivity);
-
-  // ほぼ無彩色の黒・グレー（枠線・選手名・鉛筆）は赤ではない
-  if (chroma < 5 && dom < minDom) return false;
-  if (Math.abs(r - g) <= 4 && Math.abs(r - b) <= 4 && Math.abs(g - b) <= 4 && dom < minDom) {
-    return false;
-  }
-
-  // A) 明確な赤優勢（明るい赤・朱色・ピンク）
-  if (dom >= minDom && r >= g && r >= b) {
-    if (inRedHueRange(h) || s >= 0.08 || v >= 0.35) return true;
-  }
-
-  // B) 黒線上の暗い赤茶色（あずき色）:
-  //    明度・彩度が低くても、R がわずかに勝ち、色相が赤系なら赤ペン
-  if (v < 0.62 && r >= g && r >= b) {
-    const darkDomNeed = Math.max(3, minDom - 3);
-    if (dom >= darkDomNeed && chroma >= 4) return true;
-    if (inRedHueRange(h) && dom >= Math.max(2, darkDomNeed - 1) && chroma >= 3) return true;
-    // 黒のエッジに滲んだ赤: かなり暗いが R だけ少し高い
-    if (v < 0.35 && dom >= Math.max(2, darkDomNeed - 2) && r > g && r > b) return true;
-  }
-
-  // C) 色相ベース（照明で彩度が落ちた赤〜マゼンタ）
-  if (inRedHueRange(h) && s >= 0.06 && dom >= Math.max(2, minDom - 4) && r >= Math.min(g, b)) {
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * 赤みブーストフィルター:
- * - 赤ペン（明るい赤＋暗い赤茶色）→ #DC2626 に置換
- * - 黒枠・黒文字・選手名はそのまま残す
- * - 紙の薄い影だけを白寄りに整える（真っ白塗りつぶしはしない）
+ * 赤み強調フィルター（ベタ塗り・膨張なし）:
+ * - sensitivity=0: 完全に加工なし（原本）
+ * - R > G かつ R > B の画素だけ、元の R と濃淡を保ったまま G/B を強度に応じて減算
+ * - 線の細さ・筆圧の濃淡はピクセル構造ごと維持される
  */
 export function extractRed(
   imageData: ImageData,
   sensitivity: RedSensitivity = DEFAULT_RED_SENSITIVITY,
 ): ImageData {
+  const amount = Math.max(0, Math.min(100, sensitivity));
+  if (amount <= 0) {
+    // スライダー左端: 加工なし
+    return imageData;
+  }
+
   const data = imageData.data;
+  const gbKeep = gbKeepFactor(amount);
+  // ごく弱いコントラスト: R はそのまま、減った G/B 側だけ効かせる
+  // （画素の置き換えや近傍への塗り広げは行わない）
 
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
     const g = data[i + 1];
     const b = data[i + 2];
 
-    if (isRedPenPixel(r, g, b, sensitivity)) {
-      data[i] = CRIMSON_R;
-      data[i + 1] = CRIMSON_G;
-      data[i + 2] = CRIMSON_B;
-      data[i + 3] = 255;
-      continue;
+    if (r > g && r > b) {
+      data[i] = r;
+      data[i + 1] = clamp(g * gbKeep);
+      data[i + 2] = clamp(b * gbKeep);
     }
-
-    // 非赤: 構造を残す。紙の影だけ穏やかにリフト
-    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (luma >= 155) {
-      // 明るい紙面・薄い影 → 白寄りに整える（枠線は消さない）
-      const shadowDepth = clamp01((220 - luma) / 65); // 暗い紙ほど強くリフト
-      const lift = 0.22 + 0.28 * shadowDepth;
-      data[i] = clamp(r + (255 - r) * lift);
-      data[i + 1] = clamp(g + (255 - g) * lift);
-      data[i + 2] = clamp(b + (255 - b) * lift);
-    } else if (luma >= 110) {
-      // 中間トーン: ごく弱くリフトのみ
-      const lift = 0.08;
-      data[i] = clamp(r + (255 - r) * lift);
-      data[i + 1] = clamp(g + (255 - g) * lift);
-      data[i + 2] = clamp(b + (255 - b) * lift);
-    }
-    // luma < 110: 黒枠・黒文字・濃い印刷はそのまま
+    // それ以外（黒枠・黒文字・紙）は一切変更しない
   }
   return imageData;
 }
@@ -345,7 +251,9 @@ export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string>
 }
 
 export function sensitivityLabel(value: RedSensitivity): string {
-  if (value <= 33) return "弱";
-  if (value <= 66) return "標準";
-  return "強";
+  if (value <= 0) return "原本";
+  if (value < 40) return "弱";
+  if (value <= 60) return "自然";
+  if (value < 85) return "強";
+  return "最大";
 }
