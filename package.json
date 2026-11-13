@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "selftest:analyze": "node scripts/selftest-analyze-dryrun.mjs"
   },
   "dependencies": {
     "@google/genai": "^3.2.0",
@@ -14,7 +15,6 @@
     "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "sharp": "^0.35.5",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
@@ -22,7 +22,6 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/sharp": "^0.31.1",
     "eslint": "^9",
     "eslint-config-next": "16.4.6",
     "tailwindcss": "4.3.3",

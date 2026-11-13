@@ -11,6 +11,7 @@ import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
 import { MatchScoreboard } from "@/components/scan/MatchScoreboard";
 import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
+import { ANALYZE_MAX_PAYLOAD_BYTES, ANALYZE_TARGET_PAYLOAD_BYTES } from "@/lib/constants";
 import {
   DEFAULT_RED_SENSITIVITY,
   buildAnalyzeFormData,
@@ -357,15 +358,17 @@ export function ScanTab({
     if (!page.colorUrl || !page.redUrl) {
       throw new Error(`${label}の画像がありません`);
     }
-    const prepared = await prepareAnalyzeImages(page.colorUrl, page.redUrl);
+    const prepared = await prepareAnalyzeImages(page.colorUrl, page.redUrl, {
+      maxBytes: ANALYZE_TARGET_PAYLOAD_BYTES,
+    });
     const approxMb = (prepared.approxBytes / (1024 * 1024)).toFixed(2);
-    if (prepared.approxBytes > 1.5 * 1024 * 1024) {
+    if (prepared.approxBytes > ANALYZE_MAX_PAYLOAD_BYTES) {
       throw new Error(
-        `${label}の画像が大きすぎます（約 ${approxMb}MB / 上限1.5MB）。別の写真で撮り直してください。`,
+        `${label}の画像が大きすぎます（約 ${approxMb}MB / 上限1.5MB・目標1.2MB）。別の写真で撮り直してください。`,
       );
     }
 
-    setStatus(`${label}を Gemini で解析中…（FormData 約 ${approxMb}MB）`);
+    setStatus(`${label}を Gemini で解析中…（FormData 約 ${approxMb}MB・直列送信）`);
 
     const form = buildAnalyzeFormData({
       images: prepared,
@@ -377,17 +380,26 @@ export function ScanTab({
 
     let res: Response;
     try {
-      res = await fetch("/api/analyze-score", {
-        method: "POST",
-        body: form,
-      });
+      // タイムアウト付き fetch（サーバ切断を Failed to fetch のまま放置しない）
+      const controller = new AbortController();
+      const timeoutMs = 280_000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        res = await fetch("/api/analyze-score", {
+          method: "POST",
+          body: form,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timer);
+      }
     } catch (fetchErr) {
       const detail =
         fetchErr instanceof Error
           ? `${fetchErr.name}: ${fetchErr.message}`
           : String(fetchErr);
       throw new Error(
-        `${label}の通信エラー（${detail}）。サーバーが応答前に切断された可能性があります。`,
+        `${label}の通信エラー（${detail}）。サーバーが応答前に切断された可能性があります。画像を小さくして再試行してください。`,
       );
     }
 
@@ -425,12 +437,14 @@ export function ScanTab({
     setAnalyzing(true);
     setError("");
     try {
+      // 2枚セット時も完全直列: 1枚目完了→2枚目（並列禁止）
       const dual = hasPage2;
       const firstHint: AnalyzePageHint = dual ? "first_half" : "single";
       const page1Result = await analyzeOnePage(page1, firstHint, "1枚目");
 
       let page2Result: AnalyzeJson | null = null;
       if (dual) {
+        setStatus("1枚目完了。続けて2枚目を解析します…");
         page2Result = await analyzeOnePage(page2, "second_half", "2枚目");
       }
 
