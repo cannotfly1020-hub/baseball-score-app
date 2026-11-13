@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { NextResponse } from "next/server";
 import {
   attachAnalyzeJobPromise,
@@ -275,23 +275,126 @@ export async function GET(request: Request) {
   });
 }
 
+/**
+ * 高速 Flash を最優先。argon/carbon/pro 等の重いモデルはフォールバック専用。
+ * （route 内でのみ並べ替え — UI/定数/プロンプトは変更しない）
+ */
+const FLASH_FIRST_ORDER = [
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+] as const;
+
+function isFlashModel(id: string): boolean {
+  return /flash/i.test(id);
+}
+
+function isHeavyProModel(id: string): boolean {
+  // Pro 系および argon/carbon/hydrogen（実測で長考しがち）
+  return /(?:^|[.-])(pro|argon|carbon|hydrogen)(?:$|[.-])/i.test(id) && !isFlashModel(id);
+}
+
+function preferFlashModels(candidates: string[], stickyPreferred?: string): string[] {
+  const flash: string[] = [];
+  const mid: string[] = [];
+  const heavy: string[] = [];
+  for (const id of candidates) {
+    if (isFlashModel(id)) flash.push(id);
+    else if (isHeavyProModel(id)) heavy.push(id);
+    else mid.push(id);
+  }
+  flash.sort((a, b) => {
+    const ia = FLASH_FIRST_ORDER.findIndex((p) => p === a);
+    const ib = FLASH_FIRST_ORDER.findIndex((p) => p === b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+  });
+  // 解決済み候補のみ並べ替え（存在しない ID の 404 往復をしない）
+  const ordered = [...flash, ...mid, ...heavy];
+  const seen = new Set<string>();
+  const deduped: string[] = [];
+  for (const id of ordered) {
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(id);
+  }
+  if (stickyPreferred && isFlashModel(stickyPreferred)) {
+    return [stickyPreferred, ...deduped.filter((m) => m !== stickyPreferred)];
+  }
+  return deduped;
+}
+
+function isThinkingConfigError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /thinking[_ ]?(budget|level|config)|invalid.*thinking|only set only one of thinking/i.test(
+    msg,
+  );
+}
+
 async function generateJsonFromParts(
   ai: GoogleGenAI,
   model: string,
   parts: ContentPart[],
-): Promise<{ text: string; parsed: unknown[] }> {
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ role: "user", parts }],
-    config: {
-      responseMimeType: "application/json",
-      temperature: 0.1,
-    },
-  });
+): Promise<{ text: string; parsed: unknown[]; elapsedMs: number }> {
+  const t0 = Date.now();
+  /** budget と level の同時指定は API 400。budget:1024 で長考を制限。 */
+  const run = async (thinkingConfig: {
+    includeThoughts: false;
+    thinkingBudget?: number;
+    thinkingLevel?: ThinkingLevel;
+  } | null) =>
+    ai.models.generateContent({
+      model,
+      contents: [{ role: "user", parts }],
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 8192,
+        ...(thinkingConfig ? { thinkingConfig } : {}),
+      },
+    });
 
+  let response;
+  try {
+    // budget と level は同時指定不可。1024 で長考をカット。
+    response = await run({ includeThoughts: false, thinkingBudget: 1024 });
+  } catch (err) {
+    if (isThinkingConfigError(err)) {
+      console.warn(
+        `[analyze-score] thinkingBudget=1024 rejected on ${model}; retry thinkingLevel=LOW`,
+        err instanceof Error ? err.message : err,
+      );
+      try {
+        response = await run({
+          includeThoughts: false,
+          thinkingLevel: ThinkingLevel.LOW,
+        });
+      } catch (err2) {
+        if (isThinkingConfigError(err2)) {
+          console.warn(
+            `[analyze-score] thinkingLevel rejected on ${model}; retry thinkingBudget=0 (off)`,
+          );
+          response = await run({ includeThoughts: false, thinkingBudget: 0 });
+        } else {
+          throw err2;
+        }
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const elapsedMs = Date.now() - t0;
   const text = response.text ?? "";
   if (!text) throw new Error("AIから空の応答が返りました");
-  return { text, parsed: parseJsonArray(text) };
+  console.info(
+    `[analyze-score] generateContent model=${model} elapsedMs=${elapsedMs} chars=${text.length}`,
+  );
+  return { text, parsed: parseJsonArray(text), elapsedMs };
 }
 
 async function generateWithFallback(
@@ -306,11 +409,19 @@ async function generateWithFallback(
   const cache = options?.candidateCache;
   let candidates = cache?.list;
   if (!candidates || candidates.length === 0) {
-    candidates = await resolveGeminiModelCandidates(ai, preferredModel);
+    const resolved = await resolveGeminiModelCandidates(ai, preferredModel);
+    candidates = preferFlashModels(resolved, preferredModel);
     if (cache) cache.list = candidates;
-    console.info("[analyze-score] model candidates:", candidates.slice(0, 10).join(" → "));
+    console.info(
+      "[analyze-score] model candidates (flash-first):",
+      candidates.slice(0, 10).join(" → "),
+    );
   } else if (preferredModel) {
-    candidates = [preferredModel, ...candidates.filter((m) => m !== preferredModel)];
+    // 前ステップ成功モデルが Flash なら sticky、Pro/argon なら Flash 優先を維持
+    candidates = preferFlashModels(
+      [preferredModel, ...candidates.filter((m) => m !== preferredModel)],
+      isFlashModel(preferredModel) ? preferredModel : undefined,
+    );
   }
 
   let lastError: unknown;
@@ -396,60 +507,55 @@ async function runAnalyzePipeline(
     parsed.roster,
   );
 
-  const groupResults: Array<{
-    group: string;
-    players: PlayerAtBat[];
-    raw: unknown[];
-    model: string;
-    aiInningScores: number[] | null;
-  }> = [];
+  // 上下グループはサーバー内で並列（HTTP ソケットはジョブ受理後に解放済み）
+  onStage?.("upper+lower");
+  const groupResults = await Promise.all(
+    BATTING_GROUP_SPLITS.map(async (group) => {
+      const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
+      const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
+      const prompt = buildGroupDetailsPrompt({
+        fromOrder: group.from,
+        toOrder: group.to,
+        roster: parsed.roster,
+        rosterHints: rosterExtracted,
+        pageHint: parsed.matchMeta.pageHint || "single",
+      });
 
-  for (const group of BATTING_GROUP_SPLITS) {
-    onStage?.(group.id);
-    const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
-    const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
-    const prompt = buildGroupDetailsPrompt({
-      fromOrder: group.from,
-      toOrder: group.to,
-      roster: parsed.roster,
-      rosterHints: rosterExtracted,
-      pageHint: parsed.matchMeta.pageHint || "single",
-    });
+      const result = await generateWithFallback(
+        ai,
+        [
+          { text: prompt },
+          {
+            text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
+          },
+          { inlineData: { mimeType, data: colorHalf } },
+          {
+            text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
+          },
+          { inlineData: { mimeType, data: redHalf } },
+        ],
+        { preferredModel: step1.model, candidateCache },
+      );
+      console.info(
+        `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms`,
+      );
 
-    const result = await generateWithFallback(
-      ai,
-      [
-        { text: prompt },
-        {
-          text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
-        },
-        { inlineData: { mimeType, data: colorHalf } },
-        {
-          text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
-        },
-        { inlineData: { mimeType, data: redHalf } },
-      ],
-      { preferredModel: step1.model, candidateCache },
-    );
-    console.info(
-      `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms`,
-    );
-
-    const playerRows = extractPlayersFromAiPayload(result.parsed);
-    const players = applyRosterMatching(
-      playerRows
-        .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
-        .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
-      parsed.roster,
-    );
-    groupResults.push({
-      group: group.id,
-      players,
-      raw: result.parsed,
-      model: result.model,
-      aiInningScores: extractAiInningScores(result.parsed),
-    });
-  }
+      const playerRows = extractPlayersFromAiPayload(result.parsed);
+      const players = applyRosterMatching(
+        playerRows
+          .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
+          .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
+        parsed.roster,
+      );
+      return {
+        group: group.id,
+        players,
+        raw: result.parsed,
+        model: result.model,
+        aiInningScores: extractAiInningScores(result.parsed),
+      };
+    }),
+  );
 
   onStage?.("finalize");
   let match_date = parsed.matchMeta.match_date || "";
@@ -509,7 +615,7 @@ async function runAnalyzePipeline(
     match_date,
     opponent,
     model: groupResults[0]?.model || step1.model,
-    pipeline: "async-job+serial-roster+upper/lower-relay",
+    pipeline: "async-job+flash-first+parallel-groups",
     bytesReceived: parsed.totalBytes,
     elapsedMs: Date.now() - t0,
     inningScores: reconciled.ourInnings,
