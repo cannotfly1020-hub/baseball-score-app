@@ -27,6 +27,7 @@ export function ScorePhotoUploader({
   onAnalyze,
   error,
   status,
+  usageLine,
   showPreview = true,
 }: {
   activePage: PageSlotId;
@@ -42,6 +43,8 @@ export function ScorePhotoUploader({
   onAnalyze: () => void;
   error: string;
   status: string;
+  /** 解析完了後の開発用計測（モデル／秒／トークン／推定円） */
+  usageLine?: string;
   /** false のときスロット＋解析ボタンのみ（レビュー画面表示中） */
   showPreview?: boolean;
 }) {
@@ -100,6 +103,22 @@ export function ScorePhotoUploader({
         </div>
       ) : null}
       {status ? <p className="muted">{status}</p> : null}
+      {usageLine ? (
+        <p
+          className="muted"
+          style={{
+            fontSize: 11,
+            lineHeight: 1.45,
+            marginTop: 4,
+            marginBottom: 8,
+            opacity: 0.75,
+            wordBreak: "break-word",
+          }}
+          data-testid="analyze-usage-meta"
+        >
+          {usageLine}
+        </p>
+      ) : null}
 
       {showPreview ? (
         <ScorePhotoPreview

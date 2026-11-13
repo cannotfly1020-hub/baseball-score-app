@@ -2,6 +2,7 @@ import {
   ANALYZE_MAX_PAYLOAD_BYTES,
   ANALYZE_TARGET_PAYLOAD_BYTES,
 } from "@/lib/constants";
+import type { AnalyzeUsageMeta } from "@/lib/analyze-meta";
 import {
   buildAnalyzeJsonBody,
   prepareAnalyzeImages,
@@ -25,6 +26,7 @@ export type AnalyzeJson = {
   jobStatus?: string;
   stage?: string;
   elapsedMs?: number;
+  meta?: AnalyzeUsageMeta;
 };
 
 function formatKb(bytes: number): string {
