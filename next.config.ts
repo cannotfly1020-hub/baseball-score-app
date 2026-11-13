@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   /* config options here */
   cacheComponents: true,
   partialPrefetching: true,
+  allowedDevOrigins: ["127.0.0.1"],
   experimental: {
     // FormData 画像送信 + 長時間 Gemini 解析
     proxyClientMaxBodySize: "50mb",
