@@ -110,6 +110,7 @@ export function badgeTone(result: ResultLabel): BadgeTone {
 export function emptyCellMeta(): AtBatCellMeta {
   return {
     scored: false,
+    runMark: "",
     rbi: 0,
     direction: "",
     outKind: "",

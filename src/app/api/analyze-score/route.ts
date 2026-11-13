@@ -11,6 +11,13 @@ import {
 } from "@/lib/gemini-models";
 import { buildGroupDetailsPrompt, buildRosterPrompt } from "@/lib/prompts";
 import { applyRosterMatching } from "@/lib/roster-match";
+import {
+  extractAiInningScores,
+  extractPlayersFromAiPayload,
+  finalizePlayersAfterAi,
+  parseAiCellMeta,
+  reconcileInningScores,
+} from "@/lib/score-reconcile";
 import { normalizePlayerRecord } from "@/lib/stats";
 import type { PlayerAtBat, RosterPlayer } from "@/lib/types";
 
@@ -69,8 +76,13 @@ function parseJsonArray(text: string): unknown[] {
     const parsed = JSON.parse(cleaned);
     if (Array.isArray(parsed)) return parsed;
     if (parsed && typeof parsed === "object") {
-      const obj = parsed as { players?: unknown[]; player?: unknown };
-      if (Array.isArray(obj.players)) return obj.players;
+      const obj = parsed as {
+        players?: unknown[];
+        player?: unknown;
+        inning_scores?: unknown;
+      };
+      // グループ応答は { players, inning_scores } — オブジェクトごと返し後段で分解
+      if (Array.isArray(obj.players) || obj.inning_scores) return [parsed];
       if (obj.player) return [obj.player];
       if ("batting_order" in (parsed as object) || "player_name" in (parsed as object)) {
         return [parsed];
@@ -245,11 +257,13 @@ async function generateWithFallback(
 
 function mapToPlayerAtBat(row: Record<string, unknown>): PlayerAtBat {
   const inningsRaw = (row.innings || {}) as Record<string, unknown>;
-  return normalizePlayerRecord({
+  const cellMeta = parseAiCellMeta(row);
+  const mapped = normalizePlayerRecord({
     batting_order: Number(row.batting_order) || 0,
     uniform_number: String(row.uniform_number ?? ""),
     player_name: String(row.player_name ?? ""),
     is_substitute: Boolean(row.is_substitute),
+    position: String(row.position ?? "").trim() || undefined,
     rbi: Number(row.rbi) || 0,
     stolen_bases: Number(row.stolen_bases) || 0,
     innings: {
@@ -262,8 +276,10 @@ function mapToPlayerAtBat(row: Record<string, unknown>): PlayerAtBat {
       "6": normalizeResult(inningsRaw["6"]),
       "7": normalizeResult(inningsRaw["7"]),
     },
+    cellMeta,
     highlight: String(row.highlight ?? ""),
   });
+  return finalizePlayersAfterAi([mapped])[0];
 }
 
 function bufToBase64(buf: Buffer): string {
@@ -379,23 +395,33 @@ export async function POST(request: Request) {
           { preferredModel: step1.model, candidateCache },
         );
 
+        const playerRows = extractPlayersFromAiPayload(result.parsed);
         const players = applyRosterMatching(
-          result.parsed
+          playerRows
             .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
             .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
           parsed.roster,
         );
+        const aiInningScores = extractAiInningScores(result.parsed);
 
-        return { group: group.id, players, raw: result.parsed, model: result.model };
+        return {
+          group: group.id,
+          players,
+          raw: result.parsed,
+          model: result.model,
+          aiInningScores,
+        };
       }),
     );
 
     let match_date = parsed.matchMeta.match_date || "";
     let opponent = parsed.matchMeta.opponent || "";
-    const players: PlayerAtBat[] = [];
+    let players: PlayerAtBat[] = [];
+    const aiScoreParts: number[][] = [];
 
     for (const g of groupResults) {
       for (const p of g.players) players.push(p);
+      if (g.aiInningScores) aiScoreParts.push(g.aiInningScores);
       for (const raw of g.raw) {
         const r = raw as Record<string, unknown>;
         if (!match_date && r.match_date && String(r.match_date) !== "-") {
@@ -421,10 +447,20 @@ export async function POST(request: Request) {
       }
     }
 
+    players = finalizePlayersAfterAi(players);
     players.sort((a, b) => {
       if (a.batting_order !== b.batting_order) return a.batting_order - b.batting_order;
       return Number(a.is_substitute) - Number(b.is_substitute);
     });
+
+    // 上下グループの inning_scores は部分観測のため、最終的には個人 scored 集計を正とする
+    const mergedAiScores =
+      aiScoreParts.length > 0
+        ? [0, 1, 2, 3, 4, 5, 6].map((i) =>
+            Math.max(...aiScoreParts.map((part) => part[i] || 0), 0),
+          )
+        : null;
+    const reconciled = reconcileInningScores(players, mergedAiScores);
 
     return NextResponse.json({
       ok: true,
@@ -434,11 +470,15 @@ export async function POST(request: Request) {
       model: groupResults[0]?.model || step1.model,
       pipeline: "roster+upper/lower-groups",
       bytesReceived: totalBytes,
+      inningScores: reconciled.ourInnings,
+      inningScoresMatched: reconciled.matched,
+      aiInningScores: reconciled.aiInningScores,
       raw: {
         step1: step1.parsed,
         groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
       },
     });
+
   } catch (err) {
     const { message, detail } = summarizeError(err);
     console.error("[analyze-score]", err);

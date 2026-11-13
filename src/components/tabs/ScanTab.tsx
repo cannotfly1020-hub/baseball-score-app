@@ -128,8 +128,12 @@ export function ScanTab({
     setOpponent(match.opponent);
     setMatchType(match.match_type);
     setCategory(match.category);
-    setPlayers(match.players.map((p) => ({ ...p, innings: { ...p.innings } })));
-    applyScoreboard(scoreboardFromMatch(match));
+    const nextPlayers = match.players.map((p) => ({ ...p, innings: { ...p.innings } }));
+    setPlayers(nextPlayers);
+    applyScoreboard({
+      ...scoreboardFromMatch(match),
+      ourInnings: estimateInningRunsFromPlayers(nextPlayers),
+    });
     setSavedMatch(null);
     setPhotoCompareOpen(false);
     setError("");
@@ -146,7 +150,10 @@ export function ScanTab({
       setMatchType(draft.match_type);
       setCategory(draft.category);
       setPlayers(draft.players);
-      applyScoreboard(draft.scoreboard);
+      applyScoreboard({
+        ...draft.scoreboard,
+        ourInnings: estimateInningRunsFromPlayers(draft.players),
+      });
       setStatus("下書きを復元しました。続きから編集できます。");
       showToast("下書きを復元しました");
     }
@@ -314,6 +321,8 @@ export function ScanTab({
         match_date?: string;
         opponent?: string;
         model?: string;
+        inningScores?: number[];
+        inningScoresMatched?: boolean;
       };
       try {
         json = rawText ? (JSON.parse(rawText) as typeof json) : {};
@@ -340,8 +349,12 @@ export function ScanTab({
       if (json.match_date && json.match_date !== "-") setMatchDate(String(json.match_date).slice(0, 10));
       if (json.opponent && json.opponent !== "-") setOpponent(String(json.opponent));
 
-      const estimated = estimateInningRunsFromPlayers(nextPlayers);
-      if (estimated.some((n) => n > 0)) setOurInnings(estimated);
+      // イニング得点は個人得点●の個数と常に一致させる（API検算結果優先）
+      const estimated =
+        Array.isArray(json.inningScores) && json.inningScores.length === 7
+          ? json.inningScores.map((n) => Math.max(0, Number(n) || 0))
+          : estimateInningRunsFromPlayers(nextPlayers);
+      setOurInnings(estimated);
       setPhotoCompareOpen(false);
       setSavedMatch(null);
 
@@ -350,10 +363,14 @@ export function ScanTab({
         0,
       );
       const modelNote = json.model ? `（${json.model}）` : "";
+      const scoreNote =
+        json.inningScoresMatched === false
+          ? "（イニング得点は個人得点●から再計算済み）"
+          : "";
       setStatus(
         reviewCount > 0
-          ? `解析完了${modelNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
-          : `解析完了${modelNote}。内容を確認して保存してください。`,
+          ? `解析完了${modelNote}${scoreNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
+          : `解析完了${modelNote}${scoreNote}。内容を確認して保存してください。`,
       );
       setError("");
     } catch (err) {
@@ -547,6 +564,7 @@ export function ScanTab({
             confirmLabel={
               isEditingSaved ? "上書き保存する（確定）" : "試合データを保存する（確定）"
             }
+            syncOurRunsFromScored
           />
 
           {photoCompareOpen ? (
@@ -578,7 +596,15 @@ export function ScanTab({
             <span className="matrix-legend-item">選手名タップで編集</span>
           </div>
 
-          <AtBatMatrix players={players} roster={data.roster} onChange={setPlayers} />
+          <AtBatMatrix
+            players={players}
+            roster={data.roster}
+            onChange={(next) => {
+              setPlayers(next);
+              // 得点●のON/OFFに合わせてスコアボードの各回得点を即再計算
+              setOurInnings(estimateInningRunsFromPlayers(next));
+            }}
+          />
         </div>
       )}
 

@@ -141,7 +141,13 @@ export function AtBatEditSheet({
           <button
             type="button"
             className={`sheet-toggle${meta.scored ? " on" : ""}`}
-            onClick={() => apply(current, { scored: !meta.scored })}
+            onClick={() => {
+              const nextScored = !meta.scored;
+              apply(current, {
+                scored: nextScored,
+                runMark: nextScored ? meta.runMark || "filled" : "",
+              });
+            }}
           >
             得点 ● {meta.scored ? "ON" : "OFF"}
           </button>

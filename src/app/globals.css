@@ -621,6 +621,21 @@ textarea {
   color: #fca5a5;
 }
 
+.scoreboard-cell-static {
+  display: inline-block;
+  min-width: 28px;
+  font-weight: 800;
+  color: #fff;
+}
+
+.scoreboard-hint {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  line-height: 1.4;
+}
+
 .photo-compare {
   margin: 8px 0 12px;
   border: 1px solid var(--line);
