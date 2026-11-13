@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AtBatMatrix } from "@/components/scan/AtBatMatrix";
+import {
+  DualPagePreviewTabs,
+  DualPageSlots,
+  type PageSlotId,
+} from "@/components/scan/DualPageSlots";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
 import { MatchScoreboard } from "@/components/scan/MatchScoreboard";
@@ -12,8 +17,10 @@ import {
   prepareAnalyzeImages,
   processScorebookImage,
   reprocessRedOnly,
+  type AnalyzePageHint,
   type RedSensitivity,
 } from "@/lib/image-process";
+import { mergeScorebookPages } from "@/lib/page-merge";
 import {
   countNeedsReview,
   estimateInningRunsFromPlayers,
@@ -31,6 +38,24 @@ import type {
   MatchType,
   PlayerAtBat,
 } from "@/lib/types";
+
+type PageImageState = {
+  sourceFile: File | null;
+  colorUrl: string | null;
+  redUrl: string | null;
+  redSensitivity: RedSensitivity;
+  sensitivityBusy: boolean;
+};
+
+function emptyPage(): PageImageState {
+  return {
+    sourceFile: null,
+    colorUrl: null,
+    redUrl: null,
+    redSensitivity: DEFAULT_RED_SENSITIVITY,
+    sensitivityBusy: false,
+  };
+}
 
 function emptyScoreboard(): MatchScoreboardState {
   return {
@@ -58,6 +83,17 @@ function scoreboardFromMatch(match: MatchRecord): MatchScoreboardState {
   return sb;
 }
 
+type AnalyzeJson = {
+  error?: string;
+  detail?: string;
+  players?: PlayerAtBat[];
+  match_date?: string;
+  opponent?: string;
+  model?: string;
+  inningScores?: number[];
+  inningScoresMatched?: boolean;
+};
+
 export function ScanTab({
   data,
   onSaveMatch,
@@ -76,6 +112,7 @@ export function ScanTab({
   onOpenHistory?: () => void;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const pickTargetRef = useRef<PageSlotId>(1);
   const [matchId, setMatchId] = useState<string | null>(null);
   const [matchDate, setMatchDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [opponent, setOpponent] = useState("");
@@ -86,11 +123,9 @@ export function ScanTab({
   const [ourErrors, setOurErrors] = useState(0);
   const [theirErrors, setTheirErrors] = useState(0);
   const [theirHits, setTheirHits] = useState(0);
-  const [colorUrl, setColorUrl] = useState<string | null>(null);
-  const [redUrl, setRedUrl] = useState<string | null>(null);
-  const [sourceFile, setSourceFile] = useState<File | null>(null);
-  const [redSensitivity, setRedSensitivity] = useState<RedSensitivity>(DEFAULT_RED_SENSITIVITY);
-  const [sensitivityBusy, setSensitivityBusy] = useState(false);
+  const [page1, setPage1] = useState<PageImageState>(() => emptyPage());
+  const [page2, setPage2] = useState<PageImageState>(() => emptyPage());
+  const [activePage, setActivePage] = useState<PageSlotId>(1);
   const [players, setPlayers] = useState<PlayerAtBat[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [status, setStatus] = useState("");
@@ -99,14 +134,19 @@ export function ScanTab({
   const [photoCompareOpen, setPhotoCompareOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [draftReady, setDraftReady] = useState(false);
-  const sensitivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const skipNextSensitivityEffect = useRef(false);
+  const skipSens1 = useRef(false);
+  const skipSens2 = useRef(false);
+  const timer1 = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timer2 = useRef<ReturnType<typeof setTimeout> | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const createdAtRef = useRef<string>(new Date().toISOString());
 
   const ourScore = ourInnings.reduce((a, b) => a + b, 0);
   const theirScore = theirInnings.reduce((a, b) => a + b, 0);
   const isEditingSaved = Boolean(matchId);
+  const active = activePage === 1 ? page1 : page2;
+  const hasPage2 = Boolean(page2.colorUrl && page2.redUrl);
+  const canAnalyze = Boolean(page1.colorUrl && page1.redUrl);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -140,7 +180,6 @@ export function ScanTab({
     setStatus(`「vs ${match.opponent}」を読み込みました。修正後に保存できます。`);
   };
 
-  // 起動時: 下書き復元
   useEffect(() => {
     const draft = loadMatchDraft();
     if (draft && draft.players.length > 0) {
@@ -160,17 +199,15 @@ export function ScanTab({
     setDraftReady(true);
   }, []);
 
-  // 履歴からの再編集
   useEffect(() => {
     if (!editMatch) return;
     loadMatchIntoEditor(editMatch);
     onEditMatchConsumed?.();
   }, [editMatch]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // オートセーブ
   useEffect(() => {
     if (!draftReady) return;
-    if (players.length === 0 && !matchId) {
+    if (players.length === 0) {
       clearMatchDraft();
       return;
     }
@@ -192,7 +229,7 @@ export function ScanTab({
         },
         updated_at: new Date().toISOString(),
       });
-    }, 400);
+    }, 500);
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
     };
@@ -211,61 +248,170 @@ export function ScanTab({
     theirHits,
   ]);
 
-  const onFile = async (file: File) => {
-    setStatus("画像を前処理中（高コントラスト＋赤強調）…");
+  const onFileForPage = async (slot: PageSlotId, file: File) => {
+    setStatus(`${slot}枚目を前処理中（高コントラスト＋赤強調）…`);
     setError("");
     setSavedMatch(null);
-    // 新規写真選択時はレビューを閉じ、感度スライダー付きプレビューへ戻す
     setPlayers([]);
     setPhotoCompareOpen(false);
-    setSourceFile(file);
-    setRedSensitivity(DEFAULT_RED_SENSITIVITY);
-    skipNextSensitivityEffect.current = true;
+    setActivePage(slot);
+
+    const setter = slot === 1 ? setPage1 : setPage2;
+    if (slot === 1) skipSens1.current = true;
+    else skipSens2.current = true;
+
+    setter({
+      sourceFile: file,
+      colorUrl: null,
+      redUrl: null,
+      redSensitivity: DEFAULT_RED_SENSITIVITY,
+      sensitivityBusy: false,
+    });
+
     try {
       const processed = await processScorebookImage(file, {
         redSensitivity: DEFAULT_RED_SENSITIVITY,
       });
-      setColorUrl(processed.colorDataUrl);
-      setRedUrl(processed.redDataUrl);
+      setter({
+        sourceFile: file,
+        colorUrl: processed.colorDataUrl,
+        redUrl: processed.redDataUrl,
+        redSensitivity: DEFAULT_RED_SENSITIVITY,
+        sensitivityBusy: false,
+      });
       setStatus(
-        `前処理完了（${processed.width}×${processed.height}）。赤強調感度（初期: 標準）を調整してからAI解析できます。`,
+        `${slot}枚目の前処理完了（${processed.width}×${processed.height}）。感度（標準）を調整し、必要なら2枚目もセットしてからAI解析してください。`,
       );
     } catch (err) {
+      setter(emptyPage());
       setError(err instanceof Error ? err.message : "画像処理に失敗しました");
       setStatus("");
     }
   };
 
   useEffect(() => {
-    if (!sourceFile) return;
-    if (skipNextSensitivityEffect.current) {
-      skipNextSensitivityEffect.current = false;
+    if (!page1.sourceFile) return;
+    if (skipSens1.current) {
+      skipSens1.current = false;
       return;
     }
-    if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
-    setSensitivityBusy(true);
-    sensitivityTimer.current = setTimeout(() => {
+    if (timer1.current) clearTimeout(timer1.current);
+    setPage1((prev) => ({ ...prev, sensitivityBusy: true }));
+    timer1.current = setTimeout(() => {
       void (async () => {
         try {
-          const result = await reprocessRedOnly(sourceFile, redSensitivity);
-          setRedUrl(result.redDataUrl);
-          setStatus(`赤強調を更新しました（感度 ${Math.round(redSensitivity)}）。`);
+          const result = await reprocessRedOnly(page1.sourceFile!, page1.redSensitivity);
+          setPage1((prev) => ({
+            ...prev,
+            redUrl: result.redDataUrl,
+            sensitivityBusy: false,
+          }));
+          setStatus(`1枚目の赤強調を更新（感度 ${Math.round(page1.redSensitivity)}）。`);
           setError("");
         } catch (err) {
-          setError(err instanceof Error ? err.message : "赤強調の再処理に失敗しました");
-        } finally {
-          setSensitivityBusy(false);
+          setPage1((prev) => ({ ...prev, sensitivityBusy: false }));
+          setError(err instanceof Error ? err.message : "1枚目の赤強調再処理に失敗しました");
         }
       })();
     }, 60);
     return () => {
-      if (sensitivityTimer.current) clearTimeout(sensitivityTimer.current);
+      if (timer1.current) clearTimeout(timer1.current);
     };
-  }, [redSensitivity, sourceFile]);
+  }, [page1.redSensitivity, page1.sourceFile]);
+
+  useEffect(() => {
+    if (!page2.sourceFile) return;
+    if (skipSens2.current) {
+      skipSens2.current = false;
+      return;
+    }
+    if (timer2.current) clearTimeout(timer2.current);
+    setPage2((prev) => ({ ...prev, sensitivityBusy: true }));
+    timer2.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await reprocessRedOnly(page2.sourceFile!, page2.redSensitivity);
+          setPage2((prev) => ({
+            ...prev,
+            redUrl: result.redDataUrl,
+            sensitivityBusy: false,
+          }));
+          setStatus(`2枚目の赤強調を更新（感度 ${Math.round(page2.redSensitivity)}）。`);
+          setError("");
+        } catch (err) {
+          setPage2((prev) => ({ ...prev, sensitivityBusy: false }));
+          setError(err instanceof Error ? err.message : "2枚目の赤強調再処理に失敗しました");
+        }
+      })();
+    }, 60);
+    return () => {
+      if (timer2.current) clearTimeout(timer2.current);
+    };
+  }, [page2.redSensitivity, page2.sourceFile]);
+
+  const analyzeOnePage = async (
+    page: PageImageState,
+    pageHint: AnalyzePageHint,
+    label: string,
+  ): Promise<AnalyzeJson> => {
+    if (!page.colorUrl || !page.redUrl) {
+      throw new Error(`${label}の画像がありません`);
+    }
+    const prepared = await prepareAnalyzeImages(page.colorUrl, page.redUrl);
+    const approxMb = (prepared.approxBytes / (1024 * 1024)).toFixed(2);
+    if (prepared.approxBytes > 1.5 * 1024 * 1024) {
+      throw new Error(
+        `${label}の画像が大きすぎます（約 ${approxMb}MB / 上限1.5MB）。別の写真で撮り直してください。`,
+      );
+    }
+
+    setStatus(`${label}を Gemini で解析中…（FormData 約 ${approxMb}MB）`);
+
+    const form = buildAnalyzeFormData({
+      images: prepared,
+      roster: data.roster,
+      matchMeta: { match_date: matchDate, opponent },
+      apiKey: data.settings.geminiApiKey || undefined,
+      pageHint,
+    });
+
+    let res: Response;
+    try {
+      res = await fetch("/api/analyze-score", {
+        method: "POST",
+        body: form,
+      });
+    } catch (fetchErr) {
+      const detail =
+        fetchErr instanceof Error
+          ? `${fetchErr.name}: ${fetchErr.message}`
+          : String(fetchErr);
+      throw new Error(
+        `${label}の通信エラー（${detail}）。サーバーが応答前に切断された可能性があります。`,
+      );
+    }
+
+    const rawText = await res.text();
+    let json: AnalyzeJson;
+    try {
+      json = rawText ? (JSON.parse(rawText) as AnalyzeJson) : {};
+    } catch {
+      throw new Error(
+        `${label}: サーバー応答の解析に失敗 (HTTP ${res.status}). ${rawText.slice(0, 200)}`,
+      );
+    }
+    if (!res.ok) {
+      const extra = json.detail ? ` / ${json.detail}` : "";
+      throw new Error(
+        (json.error || `${label}の解析に失敗 (HTTP ${res.status})`) + extra,
+      );
+    }
+    return json;
+  };
 
   const analyze = async () => {
-    if (!colorUrl || !redUrl) {
-      setError("先にスコアブック写真をアップロードしてください");
+    if (!canAnalyze) {
+      setError("先に1枚目のスコアブック写真をアップロードしてください");
       return;
     }
     if (!data.settings.geminiApiKey?.trim()) {
@@ -278,102 +424,63 @@ export function ScanTab({
 
     setAnalyzing(true);
     setError("");
-    setStatus("画像を圧縮して FormData 送信準備中…");
     try {
-      const prepared = await prepareAnalyzeImages(colorUrl, redUrl);
-      const approxMb = (prepared.approxBytes / (1024 * 1024)).toFixed(2);
+      const dual = hasPage2;
+      const firstHint: AnalyzePageHint = dual ? "first_half" : "single";
+      const page1Result = await analyzeOnePage(page1, firstHint, "1枚目");
 
-      if (prepared.approxBytes > 1.5 * 1024 * 1024) {
-        setError(
-          `画像データが大きすぎます（約 ${approxMb}MB / 上限1.5MB）。別の写真で撮り直してください。`,
-        );
-        setStatus("");
-        return;
+      let page2Result: AnalyzeJson | null = null;
+      if (dual) {
+        page2Result = await analyzeOnePage(page2, "second_half", "2枚目");
       }
 
-      setStatus(`Gemini で解析中…（FormData 約 ${approxMb}MB / 名簿→上下2グループ）`);
-
-      const form = buildAnalyzeFormData({
-        images: prepared,
-        roster: data.roster,
-        matchMeta: { match_date: matchDate, opponent },
-        apiKey: data.settings.geminiApiKey || undefined,
-      });
-
-      let res: Response;
-      try {
-        res = await fetch("/api/analyze-score", {
-          method: "POST",
-          body: form,
-        });
-      } catch (fetchErr) {
-        const detail =
-          fetchErr instanceof Error
-            ? `${fetchErr.name}: ${fetchErr.message}`
-            : String(fetchErr);
-        throw new Error(
-          `通信エラーが発生しました（${detail}）。サーバーが応答前に切断された可能性があります。再試行するか、画像を明るく撮り直してください。`,
-        );
-      }
-
-      const rawText = await res.text();
-      let json: {
-        error?: string;
-        detail?: string;
-        players?: PlayerAtBat[];
-        match_date?: string;
-        opponent?: string;
-        model?: string;
-        inningScores?: number[];
-        inningScoresMatched?: boolean;
-      };
-      try {
-        json = rawText ? (JSON.parse(rawText) as typeof json) : {};
-      } catch {
-        throw new Error(
-          `サーバー応答の解析に失敗しました (HTTP ${res.status} ${res.statusText || ""})。本文: ${rawText.slice(0, 240) || "(空)"}`,
-        );
-      }
-
-      if (!res.ok) {
-        const extra = json.detail ? ` / ${json.detail}` : "";
-        throw new Error(
-          (json.error ||
-            `解析に失敗しました (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""})`) +
-            extra,
-        );
-      }
-
-      const nextPlayers = json.players || [];
+      const merged = mergeScorebookPages(
+        page1Result.players || [],
+        page2Result?.players || [],
+      );
+      const nextPlayers = merged.players;
       setPlayers(nextPlayers);
       if (!matchId) {
         createdAtRef.current = new Date().toISOString();
       }
-      if (json.match_date && json.match_date !== "-") setMatchDate(String(json.match_date).slice(0, 10));
-      if (json.opponent && json.opponent !== "-") setOpponent(String(json.opponent));
 
-      // イニング得点は個人得点●の個数と常に一致させる（API検算結果優先）
-      const estimated =
-        Array.isArray(json.inningScores) && json.inningScores.length === 7
-          ? json.inningScores.map((n) => Math.max(0, Number(n) || 0))
-          : estimateInningRunsFromPlayers(nextPlayers);
-      setOurInnings(estimated);
+      const dateCandidate =
+        (page1Result.match_date && page1Result.match_date !== "-"
+          ? page1Result.match_date
+          : "") ||
+        (page2Result?.match_date && page2Result.match_date !== "-"
+          ? page2Result.match_date
+          : "");
+      const opponentCandidate =
+        (page1Result.opponent && page1Result.opponent !== "-"
+          ? page1Result.opponent
+          : "") ||
+        (page2Result?.opponent && page2Result.opponent !== "-"
+          ? page2Result.opponent
+          : "");
+      if (dateCandidate) setMatchDate(String(dateCandidate).slice(0, 10));
+      if (opponentCandidate) setOpponent(String(opponentCandidate));
+
+      setOurInnings(merged.ourInnings);
       setPhotoCompareOpen(false);
+      setActivePage(1);
       setSavedMatch(null);
 
       const reviewCount = nextPlayers.reduce(
-        (sum: number, p: PlayerAtBat) => sum + countNeedsReview(p),
+        (sum, p) => sum + countNeedsReview(p),
         0,
       );
-      const modelNote = json.model ? `（${json.model}）` : "";
-      const scoreNote =
-        json.inningScoresMatched === false
-          ? "（イニング得点は個人得点●から再計算済み）"
-          : "";
+      const models = [page1Result.model, page2Result?.model].filter(Boolean);
+      const modelNote = models.length ? `（${models.join(" / ")}）` : "";
+      const mergeNote = dual
+        ? ` 2枚を1試合に統合（イニング割当: ${Object.entries(merged.inningSources)
+            .map(([k, v]) => `${k}回→${v}枚目`)
+            .join("、")}）。`
+        : "";
       setStatus(
         reviewCount > 0
-          ? `解析完了${modelNote}${scoreNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
-          : `解析完了${modelNote}${scoreNote}。内容を確認して保存してください。`,
+          ? `解析完了${modelNote}。${mergeNote}要確認 ${reviewCount} マスがあります（黄色）。`
+          : `解析完了${modelNote}。${mergeNote}内容を確認して保存してください。`,
       );
       setError("");
     } catch (err) {
@@ -426,6 +533,23 @@ export function ScanTab({
     showToast("保存しました！");
   };
 
+  const openPicker = (slot: PageSlotId) => {
+    pickTargetRef.current = slot;
+    fileRef.current?.click();
+  };
+
+  const clearPage = (slot: PageSlotId) => {
+    if (slot === 1) {
+      setPage1(emptyPage());
+      setActivePage(page2.colorUrl ? 2 : 1);
+      setStatus("1枚目を削除しました。");
+      return;
+    }
+    setPage2(emptyPage());
+    setActivePage(1);
+    setStatus("2枚目を削除しました。1枚目のみで解析できます。");
+  };
+
   return (
     <div className={`fade-in${players.length > 0 ? " has-save-footer" : ""}`}>
       {toast ? (
@@ -438,7 +562,7 @@ export function ScanTab({
         <p className="section-label">AI SCORE READER</p>
         <h2 className="section-title">スコア読取＆修正</h2>
         <p className="muted">
-          早稲田式スコアブックを撮影 → 赤抽出＋カラーで高精度解析
+          見開き2枚までセット可能 → 赤抽出＋カラーで1試合に自動統合
           {isEditingSaved ? "（保存済み試合を再編集中）" : ""}
         </p>
 
@@ -493,23 +617,33 @@ export function ScanTab({
           hidden
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) void onFile(file);
+            if (file) void onFileForPage(pickTargetRef.current, file);
             e.target.value = "";
           }}
         />
 
+        <DualPageSlots
+          activePage={activePage}
+          onSelectPage={setActivePage}
+          page1Ready={Boolean(page1.colorUrl)}
+          page2Ready={hasPage2}
+          onPickPage={openPicker}
+          onClearPage={clearPage}
+        />
+
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <button type="button" className="btn btn-navy" style={{ flex: 1 }} onClick={() => fileRef.current?.click()}>
-            写真を選択 / 撮影
-          </button>
           <button
             type="button"
             className="btn btn-primary"
             style={{ flex: 1 }}
-            disabled={analyzing || !colorUrl}
+            disabled={analyzing || !canAnalyze}
             onClick={() => void analyze()}
           >
-            {analyzing ? "解析中…" : "AI解析"}
+            {analyzing
+              ? "解析中…"
+              : hasPage2
+                ? "AI解析（2枚を1試合に統合）"
+                : "AI解析"}
           </button>
         </div>
 
@@ -527,14 +661,37 @@ export function ScanTab({
           <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
             画像プレビュー
           </h3>
+          {(page1.colorUrl || page2.colorUrl) && (page1.colorUrl && page2.colorUrl) ? (
+            <DualPagePreviewTabs
+              activePage={activePage}
+              onSelectPage={setActivePage}
+              page1Ready={Boolean(page1.colorUrl)}
+              page2Ready={Boolean(page2.colorUrl)}
+            />
+          ) : page1.colorUrl || page2.colorUrl ? (
+            <p className="muted" style={{ marginBottom: 10, fontSize: "0.8rem" }}>
+              {activePage}枚目を表示中
+              {page1.colorUrl && !page2.colorUrl ? "（2枚目は任意）" : ""}
+            </p>
+          ) : null}
           <ImagePreview
-            key={colorUrl ? "preview-ready" : "preview-empty"}
-            colorUrl={colorUrl}
-            redUrl={redUrl}
-            redSensitivity={redSensitivity}
-            onRedSensitivityChange={setRedSensitivity}
-            sensitivityBusy={sensitivityBusy}
-            initialMode={redUrl ? "red" : "color"}
+            key={`${activePage}-${active.colorUrl ? "ready" : "empty"}`}
+            colorUrl={active.colorUrl}
+            redUrl={active.redUrl}
+            redSensitivity={active.redSensitivity}
+            onRedSensitivityChange={
+              active.colorUrl
+                ? (value) => {
+                    if (activePage === 1) {
+                      setPage1((prev) => ({ ...prev, redSensitivity: value }));
+                    } else {
+                      setPage2((prev) => ({ ...prev, redSensitivity: value }));
+                    }
+                  }
+                : undefined
+            }
+            sensitivityBusy={active.sensitivityBusy}
+            initialMode={active.redUrl ? "red" : "color"}
           />
         </div>
       ) : (
@@ -574,12 +731,35 @@ export function ScanTab({
 
           {photoCompareOpen ? (
             <div className="photo-compare">
+              {page1.colorUrl || page2.colorUrl ? (
+                <DualPagePreviewTabs
+                  activePage={activePage}
+                  onSelectPage={setActivePage}
+                  page1Ready={Boolean(page1.colorUrl)}
+                  page2Ready={Boolean(page2.colorUrl)}
+                />
+              ) : (
+                <p className="muted" style={{ marginBottom: 8 }}>
+                  このセッションに写真がありません。新規撮影すると見比べできます。
+                </p>
+              )}
               <ImagePreview
-                colorUrl={colorUrl}
-                redUrl={redUrl}
-                redSensitivity={redSensitivity}
-                onRedSensitivityChange={setRedSensitivity}
-                sensitivityBusy={sensitivityBusy}
+                key={`compare-${activePage}-${active.colorUrl || "none"}`}
+                colorUrl={active.colorUrl}
+                redUrl={active.redUrl}
+                redSensitivity={active.redSensitivity}
+                onRedSensitivityChange={
+                  active.sourceFile
+                    ? (value) => {
+                        if (activePage === 1) {
+                          setPage1((prev) => ({ ...prev, redSensitivity: value }));
+                        } else {
+                          setPage2((prev) => ({ ...prev, redSensitivity: value }));
+                        }
+                      }
+                    : undefined
+                }
+                sensitivityBusy={active.sensitivityBusy}
                 initialMode="red"
               />
             </div>
@@ -607,7 +787,6 @@ export function ScanTab({
             roster={data.roster}
             onChange={(next) => {
               setPlayers(next);
-              // 得点●のON/OFFに合わせてスコアボードの各回得点を即再計算
               setOurInnings(estimateInningRunsFromPlayers(next));
             }}
           />
