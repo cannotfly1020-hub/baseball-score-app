@@ -84,35 +84,42 @@ export const TOTAL_BASES_VALUE: Partial<Record<ResultLabel, number>> = {
 export const INNING_KEYS = ["1", "2", "3", "4", "5", "6", "7"] as const;
 
 /**
- * 精度優先の静的候補。先頭から試し、404/廃止時は次へフォールバック。
- * 実行時は models.list で利用可能モデルを動的検出して追記する（gemini-models.ts）。
+ * 実測で generateContent が通るモデルを先頭に。
+ * Pro / 2.5 系は現状 404（new users 不可）のため後ろに残す。
  */
 export const GEMINI_MODEL_CANDIDATES = [
-  "gemini-3.5-pro",
-  "gemini-3.0-pro",
-  "gemini-pro-latest",
-  "gemini-3.5-flash",
-  "gemini-3.0-flash",
-  "gemini-flash-latest",
-  "gemini-3.5-flash-lite",
+  "gemini-4-argon",
+  "gemini-4-carbon",
   "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
   "gemini-3.1-flash-lite",
+  "gemini-3.5-pro",
+  "gemini-pro-latest",
   "gemini-2.5-flash",
 ] as const;
 
 export const DEFAULT_GEMINI_MODEL = GEMINI_MODEL_CANDIDATES[0];
 
-/** 打順行スライス数（早稲田式の標準打順） */
+/** 打順グループ（上下2分割）— 9行個別呼び出しはタイムアウトの主因のため廃止 */
+export const BATTING_GROUP_SPLITS = [
+  { id: "upper", label: "上半分（打順1〜5）", from: 1, to: 5 },
+  { id: "lower", label: "下半分（打順6〜9）", from: 6, to: 9 },
+] as const;
+
+/** 互換用（旧コード参照） */
 export const BATTING_ROW_COUNT = 9;
 
-/** Canvas 前処理時の長辺上限（API送信サイズと判読のバランス） */
-export const IMAGE_MAX_SIDE = 1800;
+/** Canvas 前処理時の長辺上限 */
+export const IMAGE_MAX_SIDE = 1600;
 
 /** JPEG 出力品質（0–1） */
-export const IMAGE_JPEG_QUALITY = 0.85;
+export const IMAGE_JPEG_QUALITY = 0.82;
 
-/** AI解析へ送る画像の合計バイト上限（base64デコード後の概算） */
-export const ANALYZE_MAX_PAYLOAD_BYTES = 3 * 1024 * 1024;
+/** FormData 送信の合計バイナリ上限（1.5MB） */
+export const ANALYZE_MAX_PAYLOAD_BYTES = Math.floor(1.5 * 1024 * 1024);
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 
