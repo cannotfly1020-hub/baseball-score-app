@@ -107,9 +107,10 @@ async function main() {
     throw new Error("second request failed");
   }
 
-  child.kill("SIGTERM");
-  await sleep(500);
+  child.kill("SIGKILL");
+  await sleep(300);
   console.log("[selftest] PASS — server stayed up and returned JSON twice");
+  process.exit(0);
 }
 
 main().catch((err) => {
