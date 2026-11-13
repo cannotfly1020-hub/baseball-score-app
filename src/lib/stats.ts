@@ -36,11 +36,52 @@ export function normalizePlayerRecord(player: Partial<PlayerAtBat>): PlayerAtBat
     uniform_number: String(player.uniform_number ?? "").trim(),
     player_name: String(player.player_name ?? "").trim(),
     is_substitute: Boolean(player.is_substitute),
+    position: String(player.position ?? "").trim() || undefined,
     rbi: Number(player.rbi) || 0,
     stolen_bases: Number(player.stolen_bases) || 0,
     innings,
+    cellMeta: player.cellMeta ? { ...player.cellMeta } : undefined,
     highlight: String(player.highlight ?? "").trim(),
   };
+}
+
+/** 選手の打点合計を cellMeta.rbi から再集計（なければ従来の rbi） */
+export function syncPlayerRbiFromCells(player: PlayerAtBat): PlayerAtBat {
+  const meta = player.cellMeta;
+  if (!meta) return player;
+  let sum = 0;
+  let has = false;
+  for (const key of INNING_KEYS) {
+    const r = meta[key]?.rbi;
+    if (typeof r === "number" && r > 0) {
+      sum += r;
+      has = true;
+    }
+  }
+  return has ? { ...player, rbi: sum } : player;
+}
+
+/** 自チーム安打数 */
+export function countTeamHits(players: PlayerAtBat[]): number {
+  let hits = 0;
+  for (const p of players) {
+    for (const key of INNING_KEYS) {
+      if (HIT_RESULTS.has(normalizeResult(p.innings[key]))) hits += 1;
+    }
+  }
+  return hits;
+}
+
+/** cellMeta の scored からイニング別得点を推定 */
+export function estimateInningRunsFromPlayers(players: PlayerAtBat[]): number[] {
+  const runs = [0, 0, 0, 0, 0, 0, 0];
+  for (const p of players) {
+    for (let i = 0; i < INNING_KEYS.length; i++) {
+      const key = INNING_KEYS[i];
+      if (p.cellMeta?.[key]?.scored) runs[i] += 1;
+    }
+  }
+  return runs;
 }
 
 export function countNeedsReview(player: PlayerAtBat): number {
