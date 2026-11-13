@@ -1,6 +1,12 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
 import {
+  attachAnalyzeJobPromise,
+  createAnalyzeJob,
+  getAnalyzeJob,
+  updateAnalyzeJob,
+} from "@/lib/analyze-jobs";
+import {
   ANALYZE_MAX_PAYLOAD_BYTES,
   BATTING_GROUP_SPLITS,
   emptyInnings,
@@ -24,6 +30,21 @@ import type { PlayerAtBat, RosterPlayer } from "@/lib/types";
 
 /** 長時間 Gemini 中継用。画像加工は一切せず Base64 化して転送するだけ。 */
 export const maxDuration = 300;
+
+/** Process-level safety: never let unhandled rejections silently kill the socket. */
+declare global {
+  // eslint-disable-next-line no-var
+  var __analyzeScoreHandlersInstalled: boolean | undefined;
+}
+if (typeof globalThis !== "undefined" && !globalThis.__analyzeScoreHandlersInstalled) {
+  globalThis.__analyzeScoreHandlersInstalled = true;
+  process.on("uncaughtException", (err) => {
+    console.error("[analyze-score] uncaughtException", err);
+  });
+  process.on("unhandledRejection", (reason) => {
+    console.error("[analyze-score] unhandledRejection", reason);
+  });
+}
 
 type ContentPart =
   | { text: string }
@@ -204,12 +225,52 @@ async function parseIncomingRequest(request: Request): Promise<ParsedRequest> {
   };
 }
 
-/** 軽量ヘルスチェック（クライアントが本送信前に叩く） */
-export async function GET() {
+/**
+ * GET /api/analyze-score — health
+ * GET /api/analyze-score?jobId=… — poll async Gemini job
+ */
+export async function GET(request: Request) {
+  const jobId = new URL(request.url).searchParams.get("jobId");
+  if (jobId) {
+    const job = getAnalyzeJob(jobId);
+    if (!job) {
+      return jsonError(404, `job が見つかりません: ${jobId}`);
+    }
+    if (job.status === "done" && job.result) {
+      return NextResponse.json({
+        ...job.result,
+        jobId: job.id,
+        jobStatus: job.status,
+      });
+    }
+    if (job.status === "error") {
+      return NextResponse.json(
+        {
+          ok: false,
+          jobId: job.id,
+          jobStatus: job.status,
+          error: job.error || "解析に失敗しました",
+          detail: job.detail,
+          stage: job.stage,
+        },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({
+      ok: true,
+      accepted: true,
+      jobId: job.id,
+      jobStatus: job.status,
+      stage: job.stage || "running",
+      elapsedMs: Date.now() - job.createdAt,
+    });
+  }
+
   return NextResponse.json({
     ok: true,
     service: "analyze-score",
     accepts: "application/json",
+    mode: "async-job+poll",
     maxPayloadBytes: ANALYZE_MAX_PAYLOAD_BYTES,
   });
 }
@@ -295,7 +356,174 @@ function mapToPlayerAtBat(row: Record<string, unknown>): PlayerAtBat {
   return finalizePlayersAfterAi([mapped])[0];
 }
 
+async function runAnalyzePipeline(
+  parsed: ParsedRequest,
+  onStage?: (stage: string) => void,
+): Promise<Record<string, unknown>> {
+  const t0 = Date.now();
+  const mimeType = "image/jpeg";
+  const ai = new GoogleGenAI({ apiKey: parsed.apiKey });
+  const candidateCache: { list?: string[] } = {};
+
+  onStage?.("roster");
+  console.info(
+    `[analyze-score] pipeline start bytes=${parsed.totalBytes} t=0ms`,
+  );
+
+  const step1 = await generateWithFallback(
+    ai,
+    [
+      { text: buildRosterPrompt(parsed.roster) },
+      { text: "【全体・高コントラスト原本】左端の打順・背番号・選手名の抽出用。" },
+      { inlineData: { mimeType, data: parsed.colorB64 } },
+      { text: "【全体・赤強調】位置合わせ参考。名簿は原本優先。" },
+      { inlineData: { mimeType, data: parsed.redB64 } },
+    ],
+    { candidateCache },
+  );
+  console.info(`[analyze-score] step1 done model=${step1.model} t=${Date.now() - t0}ms`);
+
+  const rosterExtracted = applyRosterMatching(
+    step1.parsed.map((row) => {
+      const r = row as Record<string, unknown>;
+      return {
+        batting_order: Number(r.batting_order) || 0,
+        uniform_number: String(r.uniform_number ?? ""),
+        player_name: String(r.player_name ?? ""),
+        is_substitute: Boolean(r.is_substitute),
+      };
+    }),
+    parsed.roster,
+  );
+
+  const groupResults: Array<{
+    group: string;
+    players: PlayerAtBat[];
+    raw: unknown[];
+    model: string;
+    aiInningScores: number[] | null;
+  }> = [];
+
+  for (const group of BATTING_GROUP_SPLITS) {
+    onStage?.(group.id);
+    const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
+    const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
+    const prompt = buildGroupDetailsPrompt({
+      fromOrder: group.from,
+      toOrder: group.to,
+      roster: parsed.roster,
+      rosterHints: rosterExtracted,
+      pageHint: parsed.matchMeta.pageHint || "single",
+    });
+
+    const result = await generateWithFallback(
+      ai,
+      [
+        { text: prompt },
+        {
+          text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
+        },
+        { inlineData: { mimeType, data: colorHalf } },
+        {
+          text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
+        },
+        { inlineData: { mimeType, data: redHalf } },
+      ],
+      { preferredModel: step1.model, candidateCache },
+    );
+    console.info(
+      `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms`,
+    );
+
+    const playerRows = extractPlayersFromAiPayload(result.parsed);
+    const players = applyRosterMatching(
+      playerRows
+        .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
+        .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
+      parsed.roster,
+    );
+    groupResults.push({
+      group: group.id,
+      players,
+      raw: result.parsed,
+      model: result.model,
+      aiInningScores: extractAiInningScores(result.parsed),
+    });
+  }
+
+  onStage?.("finalize");
+  let match_date = parsed.matchMeta.match_date || "";
+  let opponent = parsed.matchMeta.opponent || "";
+  let players: PlayerAtBat[] = [];
+  const aiScoreParts: number[][] = [];
+
+  for (const g of groupResults) {
+    for (const p of g.players) players.push(p);
+    if (g.aiInningScores) aiScoreParts.push(g.aiInningScores);
+    for (const raw of g.raw) {
+      const r = raw as Record<string, unknown>;
+      if (!match_date && r.match_date && String(r.match_date) !== "-") {
+        match_date = String(r.match_date);
+      }
+      if (!opponent && r.opponent && String(r.opponent) !== "-") {
+        opponent = String(r.opponent);
+      }
+    }
+  }
+
+  if (players.length === 0 && rosterExtracted.length > 0) {
+    for (const r of rosterExtracted) {
+      players.push(
+        normalizePlayerRecord({
+          ...r,
+          rbi: 0,
+          stolen_bases: 0,
+          innings: emptyInnings(),
+          highlight: "",
+        }),
+      );
+    }
+  }
+
+  players = finalizePlayersAfterAi(players);
+  players.sort((a, b) => {
+    if (a.batting_order !== b.batting_order) return a.batting_order - b.batting_order;
+    return Number(a.is_substitute) - Number(b.is_substitute);
+  });
+
+  const mergedAiScores =
+    aiScoreParts.length > 0
+      ? [0, 1, 2, 3, 4, 5, 6].map((i) =>
+          Math.max(...aiScoreParts.map((part) => part[i] || 0), 0),
+        )
+      : null;
+  const reconciled = reconcileInningScores(players, mergedAiScores);
+
+  console.info(
+    `[analyze-score] pipeline done players=${players.length} t=${Date.now() - t0}ms`,
+  );
+
+  return {
+    ok: true,
+    players,
+    match_date,
+    opponent,
+    model: groupResults[0]?.model || step1.model,
+    pipeline: "async-job+serial-roster+upper/lower-relay",
+    bytesReceived: parsed.totalBytes,
+    elapsedMs: Date.now() - t0,
+    inningScores: reconciled.ourInnings,
+    inningScoresMatched: reconciled.matched,
+    aiInningScores: reconciled.aiInningScores,
+    raw: {
+      step1: step1.parsed,
+      groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
+    },
+  };
+}
+
 export async function POST(request: Request) {
+  const reqStarted = Date.now();
   try {
     let parsed: ParsedRequest;
     try {
@@ -309,6 +537,10 @@ export async function POST(request: Request) {
       return jsonError(status, message, detail);
     }
 
+    console.info(
+      `[analyze-score] POST parsed bytes=${parsed.totalBytes} dryRun=${parsed.dryRun} parseMs=${Date.now() - reqStarted}`,
+    );
+
     if (parsed.totalBytes > ANALYZE_MAX_PAYLOAD_BYTES) {
       return jsonError(
         413,
@@ -316,7 +548,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // 自己テスト／疎通確認: Gemini を呼ばず受信・Base64 化だけ検証して返す
     if (parsed.dryRun) {
       console.info(
         `[analyze-score] dryRun ok bytes=${parsed.totalBytes} roster=${parsed.roster.length}`,
@@ -342,152 +573,49 @@ export async function POST(request: Request) {
       );
     }
 
-    const mimeType = "image/jpeg";
-    const ai = new GoogleGenAI({ apiKey: parsed.apiKey });
-    const candidateCache: { list?: string[] } = {};
+    /**
+     * Async accept: return jobId in milliseconds so the HTTP socket is not held
+     * open for the full Gemini duration (~60s+), which caused TypeError: Failed
+     * to fetch on port-forward / idle proxies while PID stayed alive.
+     */
+    const job = createAnalyzeJob();
+    updateAnalyzeJob(job.id, { status: "running", stage: "starting" });
 
-    // Step 1: 名簿（俯瞰 color/red のみ）
-    const step1 = await generateWithFallback(
-      ai,
-      [
-        { text: buildRosterPrompt(parsed.roster) },
-        { text: "【全体・高コントラスト原本】左端の打順・背番号・選手名の抽出用。" },
-        { inlineData: { mimeType, data: parsed.colorB64 } },
-        { text: "【全体・赤強調】位置合わせ参考。名簿は原本優先。" },
-        { inlineData: { mimeType, data: parsed.redB64 } },
-      ],
-      { candidateCache },
+    const promise = (async () => {
+      try {
+        const result = await runAnalyzePipeline(parsed, (stage) => {
+          updateAnalyzeJob(job.id, { status: "running", stage });
+        });
+        updateAnalyzeJob(job.id, { status: "done", stage: "done", result });
+      } catch (err) {
+        const { message, detail } = summarizeError(err);
+        console.error(`[analyze-score] job ${job.id} failed`, err);
+        updateAnalyzeJob(job.id, {
+          status: "error",
+          stage: "error",
+          error: message,
+          detail,
+        });
+      }
+    })();
+    attachAnalyzeJobPromise(job.id, promise);
+
+    console.info(
+      `[analyze-score] job accepted id=${job.id} bytes=${parsed.totalBytes} acceptMs=${Date.now() - reqStarted}`,
     );
 
-    const rosterExtracted = applyRosterMatching(
-      step1.parsed.map((row) => {
-        const r = row as Record<string, unknown>;
-        return {
-          batting_order: Number(r.batting_order) || 0,
-          uniform_number: String(r.uniform_number ?? ""),
-          player_name: String(r.player_name ?? ""),
-          is_substitute: Boolean(r.is_substitute),
-        };
-      }),
-      parsed.roster,
-    );
-
-    // Step 2: 上下グループを完全直列（Promise.all 禁止＝同時多重で Failed to fetch の主因）
-    const groupResults: Array<{
-      group: string;
-      players: PlayerAtBat[];
-      raw: unknown[];
-      model: string;
-      aiInningScores: number[] | null;
-    }> = [];
-
-    for (const group of BATTING_GROUP_SPLITS) {
-      const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
-      const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
-      const prompt = buildGroupDetailsPrompt({
-        fromOrder: group.from,
-        toOrder: group.to,
-        roster: parsed.roster,
-        rosterHints: rosterExtracted,
-        pageHint: parsed.matchMeta.pageHint || "single",
-      });
-
-      // グループ拡大画像のみ中継（俯瞰の二重送信を避けメモリ・タイムアウトを抑制）
-      const result = await generateWithFallback(
-        ai,
-        [
-          { text: prompt },
-          {
-            text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
-          },
-          { inlineData: { mimeType, data: colorHalf } },
-          {
-            text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
-          },
-          { inlineData: { mimeType, data: redHalf } },
-        ],
-        { preferredModel: step1.model, candidateCache },
-      );
-
-      const playerRows = extractPlayersFromAiPayload(result.parsed);
-      const players = applyRosterMatching(
-        playerRows
-          .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
-          .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
-        parsed.roster,
-      );
-      groupResults.push({
-        group: group.id,
-        players,
-        raw: result.parsed,
-        model: result.model,
-        aiInningScores: extractAiInningScores(result.parsed),
-      });
-    }
-
-    let match_date = parsed.matchMeta.match_date || "";
-    let opponent = parsed.matchMeta.opponent || "";
-    let players: PlayerAtBat[] = [];
-    const aiScoreParts: number[][] = [];
-
-    for (const g of groupResults) {
-      for (const p of g.players) players.push(p);
-      if (g.aiInningScores) aiScoreParts.push(g.aiInningScores);
-      for (const raw of g.raw) {
-        const r = raw as Record<string, unknown>;
-        if (!match_date && r.match_date && String(r.match_date) !== "-") {
-          match_date = String(r.match_date);
-        }
-        if (!opponent && r.opponent && String(r.opponent) !== "-") {
-          opponent = String(r.opponent);
-        }
-      }
-    }
-
-    if (players.length === 0 && rosterExtracted.length > 0) {
-      for (const r of rosterExtracted) {
-        players.push(
-          normalizePlayerRecord({
-            ...r,
-            rbi: 0,
-            stolen_bases: 0,
-            innings: emptyInnings(),
-            highlight: "",
-          }),
-        );
-      }
-    }
-
-    players = finalizePlayersAfterAi(players);
-    players.sort((a, b) => {
-      if (a.batting_order !== b.batting_order) return a.batting_order - b.batting_order;
-      return Number(a.is_substitute) - Number(b.is_substitute);
-    });
-
-    const mergedAiScores =
-      aiScoreParts.length > 0
-        ? [0, 1, 2, 3, 4, 5, 6].map((i) =>
-            Math.max(...aiScoreParts.map((part) => part[i] || 0), 0),
-          )
-        : null;
-    const reconciled = reconcileInningScores(players, mergedAiScores);
-
-    return NextResponse.json({
-      ok: true,
-      players,
-      match_date,
-      opponent,
-      model: groupResults[0]?.model || step1.model,
-      pipeline: "serial-roster+upper/lower-relay",
-      bytesReceived: parsed.totalBytes,
-      inningScores: reconciled.ourInnings,
-      inningScoresMatched: reconciled.matched,
-      aiInningScores: reconciled.aiInningScores,
-      raw: {
-        step1: step1.parsed,
-        groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
+    return NextResponse.json(
+      {
+        ok: true,
+        accepted: true,
+        jobId: job.id,
+        jobStatus: "running",
+        bytesReceived: parsed.totalBytes,
+        acceptMs: Date.now() - reqStarted,
+        pollUrl: `/api/analyze-score?jobId=${encodeURIComponent(job.id)}`,
       },
-    });
+      { status: 202 },
+    );
   } catch (err) {
     const { message, detail } = summarizeError(err);
     console.error("[analyze-score]", err);
