@@ -1,13 +1,14 @@
 /**
  * Browser Canvas によるスコアブック画像前処理。
- * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1600px）
+ * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1400px）
  * 2) 赤強調画像（線の細さを保ったまま赤ペン彩度を上げる）
- * 解析送信は FormData バイナリで合計 ≤1.2MB 目標（絶対上限 1.5MB）。
+ * 解析送信は application/json + Base64（合計 ≤900KB）。FormData は使わない。
  * サーバ側は画像加工せず Base64 中継のみ。
  */
 
 import {
   ANALYZE_MAX_PAYLOAD_BYTES,
+  ANALYZE_MAX_SINGLE_IMAGE_BYTES,
   ANALYZE_TARGET_PAYLOAD_BYTES,
   IMAGE_JPEG_QUALITY,
   IMAGE_MAX_SIDE,
@@ -20,7 +21,7 @@ export interface ProcessedImages {
   height: number;
 }
 
-/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 1.2MB 目標） */
+/** AI解析APIへ送る最適化済み画像セット（合計 ≤900KB） */
 export interface AnalyzeImagePayload {
   colorDataUrl: string;
   redDataUrl: string;
@@ -297,8 +298,8 @@ export function dataUrlToBlob(dataUrl: string, mime = "image/jpeg"): Blob {
 }
 
 /**
- * 全体俯瞰＋上下2分割（打順1–5 / 6–9）を用意し、合計 ≤1.2MB（目標）に収める。
- * 長辺最大 1600px・JPEG 品質は 0.82 から段階的に下げる。
+ * 全体俯瞰＋上下2分割を用意し、合計 ≤900KB に収める。
+ * 長辺最大 1400px・JPEG 品質 0.76 から段階的に下げる。
  */
 export async function prepareAnalyzeImages(
   colorDataUrl: string,
@@ -307,10 +308,9 @@ export async function prepareAnalyzeImages(
 ): Promise<AnalyzeImagePayload> {
   const maxBytes = options?.maxBytes ?? ANALYZE_TARGET_PAYLOAD_BYTES;
   const hardMax = ANALYZE_MAX_PAYLOAD_BYTES;
-  // 品質は標準 0.82 から。サイズが厳しければ下げる。
-  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.68, 0.6, 0.52, 0.45];
-  const overviewSides = [1100, 1000, 900, 800, 700];
-  const halfSides = [IMAGE_MAX_SIDE, 1400, 1200, 1000, 900, 800];
+  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.7, 0.64, 0.58, 0.5, 0.42];
+  const overviewSides = [1000, 900, 800, 700, 600];
+  const halfSides = [IMAGE_MAX_SIDE, 1200, 1000, 900, 800, 700];
 
   let lastPayload: AnalyzeImagePayload | null = null;
 
@@ -346,15 +346,23 @@ export async function prepareAnalyzeImages(
         payload.redBottomDataUrl,
       );
       lastPayload = payload;
-      if (payload.approxBytes <= maxBytes) return payload;
+      const singlesOk = [
+        payload.colorDataUrl,
+        payload.redDataUrl,
+        payload.colorTopDataUrl,
+        payload.colorBottomDataUrl,
+        payload.redTopDataUrl,
+        payload.redBottomDataUrl,
+      ].every((u) => approxDecodedBytes(u) <= ANALYZE_MAX_SINGLE_IMAGE_BYTES);
+      if (payload.approxBytes <= maxBytes && singlesOk) return payload;
     }
   }
 
   // 最終フォールバック
-  const color = await reencodeDataUrl(colorDataUrl, 700, 0.4);
-  const red = await reencodeDataUrl(redDataUrl, 700, 0.4);
-  const colorHalves = await splitVerticalHalves(color.dataUrl, 0.4);
-  const redHalves = await splitVerticalHalves(red.dataUrl, 0.4);
+  const color = await reencodeDataUrl(colorDataUrl, 600, 0.38);
+  const red = await reencodeDataUrl(redDataUrl, 600, 0.38);
+  const colorHalves = await splitVerticalHalves(color.dataUrl, 0.38);
+  const redHalves = await splitVerticalHalves(red.dataUrl, 0.38);
   const payload: AnalyzeImagePayload = {
     colorDataUrl: color.dataUrl,
     redDataUrl: red.dataUrl,
@@ -363,8 +371,8 @@ export async function prepareAnalyzeImages(
     redTopDataUrl: redHalves.top,
     redBottomDataUrl: redHalves.bottom,
     approxBytes: 0,
-    maxSide: 700,
-    jpegQuality: 0.4,
+    maxSide: 600,
+    jpegQuality: 0.38,
     splitHalves: true,
   };
   payload.approxBytes = approxDecodedBytes(
@@ -383,47 +391,61 @@ export async function prepareAnalyzeImages(
 
 export type AnalyzePageHint = "single" | "first_half" | "second_half";
 
-/** 解析 API 用 FormData（巨大 JSON+Base64 を使わない） */
-export function buildAnalyzeFormData(args: {
+export type AnalyzeJsonRequestBody = {
+  colorImageBase64: string;
+  redImageBase64: string;
+  colorTopImageBase64: string;
+  colorBottomImageBase64: string;
+  redTopImageBase64: string;
+  redBottomImageBase64: string;
+  mimeType: "image/jpeg";
+  roster: unknown;
+  matchMeta: { match_date?: string; opponent?: string; pageHint?: AnalyzePageHint };
+  apiKey?: string;
+  dryRun?: boolean;
+  imageMeta: {
+    maxSide: number;
+    jpegQuality: number;
+    approxBytes: number;
+    jsonBytes?: number;
+    pageHint: AnalyzePageHint;
+  };
+};
+
+/** 解析 API 用 JSON ボディ（FormData 禁止・application/json のみ） */
+export function buildAnalyzeJsonBody(args: {
   images: AnalyzeImagePayload;
   roster: unknown;
   matchMeta: { match_date?: string; opponent?: string };
   apiKey?: string;
-  /** 見開き2枚のうちどのページか（プロンプト誘導用） */
   pageHint?: AnalyzePageHint;
-}): FormData {
-  const fd = new FormData();
-  fd.append("color", dataUrlToBlob(args.images.colorDataUrl), "color.jpg");
-  fd.append("red", dataUrlToBlob(args.images.redDataUrl), "red.jpg");
-  fd.append("colorTop", dataUrlToBlob(args.images.colorTopDataUrl), "color-top.jpg");
-  fd.append("colorBottom", dataUrlToBlob(args.images.colorBottomDataUrl), "color-bottom.jpg");
-  fd.append("redTop", dataUrlToBlob(args.images.redTopDataUrl), "red-top.jpg");
-  fd.append("redBottom", dataUrlToBlob(args.images.redBottomDataUrl), "red-bottom.jpg");
-  fd.append("roster", JSON.stringify(args.roster ?? []));
-  fd.append(
-    "matchMeta",
-    JSON.stringify({
+  dryRun?: boolean;
+}): AnalyzeJsonRequestBody {
+  const pageHint = args.pageHint || "single";
+  const body: AnalyzeJsonRequestBody = {
+    colorImageBase64: dataUrlToBase64(args.images.colorDataUrl),
+    redImageBase64: dataUrlToBase64(args.images.redDataUrl),
+    colorTopImageBase64: dataUrlToBase64(args.images.colorTopDataUrl),
+    colorBottomImageBase64: dataUrlToBase64(args.images.colorBottomDataUrl),
+    redTopImageBase64: dataUrlToBase64(args.images.redTopDataUrl),
+    redBottomImageBase64: dataUrlToBase64(args.images.redBottomDataUrl),
+    mimeType: "image/jpeg",
+    roster: args.roster ?? [],
+    matchMeta: {
       ...(args.matchMeta ?? {}),
-      pageHint: args.pageHint || "single",
-    }),
-  );
-  if (args.apiKey) fd.append("apiKey", args.apiKey);
-  fd.append(
-    "imageMeta",
-    JSON.stringify({
+      pageHint,
+    },
+    dryRun: args.dryRun || undefined,
+    imageMeta: {
       maxSide: args.images.maxSide,
       jpegQuality: args.images.jpegQuality,
       approxBytes: args.images.approxBytes,
-      pageHint: args.pageHint || "single",
-    }),
-  );
-  return fd;
-}
-
-/** 自己テスト用: dryRun フラグ付き FormData */
-export function appendDryRunFlag(form: FormData): FormData {
-  form.append("dryRun", "1");
-  return form;
+      pageHint,
+    },
+  };
+  if (args.apiKey) body.apiKey = args.apiKey;
+  body.imageMeta.jsonBytes = new TextEncoder().encode(JSON.stringify(body)).length;
+  return body;
 }
 
 export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string> {

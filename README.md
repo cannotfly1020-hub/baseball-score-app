@@ -16,7 +16,7 @@ npm run dev
 
 ## 主な機能
 
-- Canvas 前処理（高コントラスト原本 + 赤強調 + 上下2分割を FormData で合計1.5MB以内）
+- Canvas 前処理（高コントラスト原本 + 赤強調 + 上下2分割を JSON/Base64 で合計900KB以内）
 - 3段解析（名簿抽出 → 上半分1–5番 → 下半分6–9番）
 - 打席盤面のタップ修正（「要確認」は黄色ハイライト）
 - ホーム / AI読取 / 選手成績・称号 / 試合履歴・Excel出力
@@ -26,6 +26,6 @@ npm run dev
 
 ## 技術メモ
 
-- API: `POST /api/analyze-score`（FormData、`models.list` 動的フォールバック、上下グループ高精度読取）
+- API: `GET/POST /api/analyze-score`（`application/json` Base64、`models.list` 動的フォールバック、上下グループ高精度読取）
 - Excel: `xlsx` ライブラリ
 - データ: 端末内 `localStorage`（キー `baseball-scorebook-v1`）

@@ -112,17 +112,20 @@ export const BATTING_GROUP_SPLITS = [
 /** 互換用（旧コード参照） */
 export const BATTING_ROW_COUNT = 9;
 
-/** Canvas 前処理時の長辺上限 */
-export const IMAGE_MAX_SIDE = 1600;
+/** Canvas 前処理／解析送信用の長辺上限 */
+export const IMAGE_MAX_SIDE = 1400;
 
-/** JPEG 出力品質（0–1） */
-export const IMAGE_JPEG_QUALITY = 0.82;
+/** JPEG 出力品質（0–1）— 解析 JSON 送信用の標準 */
+export const IMAGE_JPEG_QUALITY = 0.76;
 
-/** FormData 送信の目標合計サイズ（1.2MB・これを目指して圧縮） */
-export const ANALYZE_TARGET_PAYLOAD_BYTES = Math.floor(1.2 * 1024 * 1024);
+/** 解析 JSON の画像バイナリ合計目標（900KB） */
+export const ANALYZE_TARGET_PAYLOAD_BYTES = Math.floor(900 * 1024);
 
-/** FormData 送信の絶対上限（1.5MB・超えたら送信拒否） */
-export const ANALYZE_MAX_PAYLOAD_BYTES = Math.floor(1.5 * 1024 * 1024);
+/** 解析 JSON の画像バイナリ絶対上限（900KB） */
+export const ANALYZE_MAX_PAYLOAD_BYTES = Math.floor(900 * 1024);
+
+/** 1枚あたりの目安上限（500KB） */
+export const ANALYZE_MAX_SINGLE_IMAGE_BYTES = Math.floor(500 * 1024);
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
 
