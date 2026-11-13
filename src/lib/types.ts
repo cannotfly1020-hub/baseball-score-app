@@ -29,16 +29,38 @@ export interface RosterPlayer {
   note: string;
 }
 
-export type InningsMap = Record<"1" | "2" | "3" | "4" | "5" | "6" | "7", ResultLabel>;
+export type InningKey = "1" | "2" | "3" | "4" | "5" | "6" | "7";
+
+export type InningsMap = Record<InningKey, ResultLabel>;
+
+/** 打球方向（表示用短縮ラベルに使用） */
+export type HitDirection = "" | "投" | "捕" | "一" | "二" | "三" | "遊" | "左" | "中" | "右";
+
+export type OutKind = "" | "ゴロ" | "フライ" | "ライナー";
+export type StrikeoutKind = "" | "空" | "見";
+
+/** 打席マスの付加情報（得点●・打点・方向など） */
+export interface AtBatCellMeta {
+  scored?: boolean;
+  rbi?: number;
+  direction?: HitDirection;
+  outKind?: OutKind;
+  strikeoutKind?: StrikeoutKind;
+}
+
+export type CellMetaMap = Partial<Record<InningKey, AtBatCellMeta>>;
 
 export interface PlayerAtBat {
   batting_order: number;
   uniform_number: string;
   player_name: string;
   is_substitute: boolean;
+  /** 守備位置（任意・表示用） */
+  position?: string;
   rbi: number;
   stolen_bases: number;
   innings: InningsMap;
+  cellMeta?: CellMetaMap;
   highlight: string;
 }
 

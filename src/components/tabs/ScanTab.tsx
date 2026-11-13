@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AtBatGrid } from "@/components/scan/AtBatGrid";
+import { AtBatMatrix } from "@/components/scan/AtBatMatrix";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
+import { MatchScoreboard } from "@/components/scan/MatchScoreboard";
 import { CATEGORIES, MATCH_TYPES, createId } from "@/lib/constants";
 import {
   DEFAULT_RED_SENSITIVITY,
@@ -13,7 +14,11 @@ import {
   reprocessRedOnly,
   type RedSensitivity,
 } from "@/lib/image-process";
-import { countNeedsReview, inferMatchResult } from "@/lib/stats";
+import {
+  countNeedsReview,
+  estimateInningRunsFromPlayers,
+  inferMatchResult,
+} from "@/lib/stats";
 import type { AppData, MatchRecord, MatchType, PlayerAtBat } from "@/lib/types";
 
 export function ScanTab({
@@ -32,8 +37,11 @@ export function ScanTab({
   const [opponent, setOpponent] = useState("");
   const [matchType, setMatchType] = useState<MatchType>("公式戦");
   const [category, setCategory] = useState<string>(CATEGORIES[1]);
-  const [ourScore, setOurScore] = useState(0);
-  const [theirScore, setTheirScore] = useState(0);
+  const [ourInnings, setOurInnings] = useState<number[]>(() => [0, 0, 0, 0, 0, 0, 0]);
+  const [theirInnings, setTheirInnings] = useState<number[]>(() => [0, 0, 0, 0, 0, 0, 0]);
+  const [ourErrors, setOurErrors] = useState(0);
+  const [theirErrors, setTheirErrors] = useState(0);
+  const [theirHits, setTheirHits] = useState(0);
   const [colorUrl, setColorUrl] = useState<string | null>(null);
   const [redUrl, setRedUrl] = useState<string | null>(null);
   const [sourceFile, setSourceFile] = useState<File | null>(null);
@@ -44,8 +52,12 @@ export function ScanTab({
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [savedMatch, setSavedMatch] = useState<MatchRecord | null>(null);
+  const [photoCompareOpen, setPhotoCompareOpen] = useState(false);
   const sensitivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipNextSensitivityEffect = useRef(false);
+
+  const ourScore = ourInnings.reduce((a, b) => a + b, 0);
+  const theirScore = theirInnings.reduce((a, b) => a + b, 0);
 
   const onFile = async (file: File) => {
     setStatus("画像を前処理中（高コントラスト＋赤強調）…");
@@ -179,11 +191,16 @@ export function ScanTab({
         );
       }
 
-      setPlayers(json.players || []);
+      const nextPlayers = json.players || [];
+      setPlayers(nextPlayers);
       if (json.match_date && json.match_date !== "-") setMatchDate(String(json.match_date).slice(0, 10));
       if (json.opponent && json.opponent !== "-") setOpponent(String(json.opponent));
 
-      const reviewCount = (json.players || []).reduce(
+      const estimated = estimateInningRunsFromPlayers(nextPlayers);
+      if (estimated.some((n) => n > 0)) setOurInnings(estimated);
+      setPhotoCompareOpen(false);
+
+      const reviewCount = nextPlayers.reduce(
         (sum: number, p: PlayerAtBat) => sum + countNeedsReview(p),
         0,
       );
@@ -191,7 +208,7 @@ export function ScanTab({
       setStatus(
         reviewCount > 0
           ? `解析完了${modelNote}。要確認 ${reviewCount} マスがあります（黄色）。タップして修正してください。`
-          : `解析完了${modelNote}。内容を確認して確定してください。`,
+          : `解析完了${modelNote}。スコアボードと一覧を確認して確定してください。`,
       );
       setError("");
     } catch (err) {
@@ -269,27 +286,6 @@ export function ScanTab({
           </div>
         </div>
 
-        <div className="grid-2">
-          <div className="field">
-            <label>自チーム得点</label>
-            <input
-              type="number"
-              min={0}
-              value={ourScore}
-              onChange={(e) => setOurScore(Number(e.target.value) || 0)}
-            />
-          </div>
-          <div className="field">
-            <label>相手得点</label>
-            <input
-              type="number"
-              min={0}
-              value={theirScore}
-              onChange={(e) => setTheirScore(Number(e.target.value) || 0)}
-            />
-          </div>
-        </div>
-
         <input
           ref={fileRef}
           type="file"
@@ -326,36 +322,79 @@ export function ScanTab({
         {status ? <p className="muted">{status}</p> : null}
       </div>
 
-      <div className="panel">
-        <p className="section-label">PREVIEW</p>
-        <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
-          画像プレビュー
-        </h3>
-        <ImagePreview
-          colorUrl={colorUrl}
-          redUrl={redUrl}
-          redSensitivity={redSensitivity}
-          onRedSensitivityChange={setRedSensitivity}
-          sensitivityBusy={sensitivityBusy}
-        />
-      </div>
+      {players.length === 0 ? (
+        <div className="panel">
+          <p className="section-label">PREVIEW</p>
+          <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
+            画像プレビュー
+          </h3>
+          <ImagePreview
+            colorUrl={colorUrl}
+            redUrl={redUrl}
+            redSensitivity={redSensitivity}
+            onRedSensitivityChange={setRedSensitivity}
+            sensitivityBusy={sensitivityBusy}
+          />
+        </div>
+      ) : (
+        <div className="panel review-panel">
+          <p className="section-label">MATCH BOARD</p>
+          <h3 className="section-title" style={{ fontSize: "1.05rem", marginBottom: 10 }}>
+            試合確認・1タップ修正
+          </h3>
 
-      <div className="panel">
-        <p className="section-label">EDIT BOARD</p>
-        <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
-          打席盤面の修正
-        </h3>
-        <AtBatGrid players={players} onChange={setPlayers} />
-        <button
-          type="button"
-          className="btn btn-primary"
-          style={{ width: "100%", marginTop: 12 }}
-          disabled={players.length === 0}
-          onClick={confirm}
-        >
-          確定して保存
-        </button>
-      </div>
+          <MatchScoreboard
+            teamName={data.settings.teamName || "自チーム"}
+            opponent={opponent}
+            ourInnings={ourInnings}
+            theirInnings={theirInnings}
+            ourErrors={ourErrors}
+            theirErrors={theirErrors}
+            theirHits={theirHits}
+            players={players}
+            onOurInningChange={(i, v) =>
+              setOurInnings((prev) => prev.map((n, idx) => (idx === i ? v : n)))
+            }
+            onTheirInningChange={(i, v) =>
+              setTheirInnings((prev) => prev.map((n, idx) => (idx === i ? v : n)))
+            }
+            onOurErrorsChange={setOurErrors}
+            onTheirErrorsChange={setTheirErrors}
+            onTheirHitsChange={setTheirHits}
+            onConfirm={confirm}
+            onTogglePhoto={() => setPhotoCompareOpen((v) => !v)}
+            photoOpen={photoCompareOpen}
+            canConfirm={players.length > 0}
+          />
+
+          {photoCompareOpen ? (
+            <div className="photo-compare">
+              <ImagePreview
+                colorUrl={colorUrl}
+                redUrl={redUrl}
+                redSensitivity={redSensitivity}
+                onRedSensitivityChange={setRedSensitivity}
+                sensitivityBusy={sensitivityBusy}
+              />
+            </div>
+          ) : null}
+
+          <div className="matrix-legend">
+            <span className="matrix-legend-item">
+              <i className="tone-swatch tone-hit" />安打
+            </span>
+            <span className="matrix-legend-item">
+              <i className="tone-swatch tone-extra" />長打
+            </span>
+            <span className="matrix-legend-item">
+              <i className="tone-swatch tone-review" />要確認
+            </span>
+            <span className="matrix-legend-item">● 得点</span>
+          </div>
+
+          <AtBatMatrix players={players} onChange={setPlayers} />
+        </div>
+      )}
 
       {savedMatch ? <HeroCard match={savedMatch} teamName={data.settings.teamName} /> : null}
     </div>
