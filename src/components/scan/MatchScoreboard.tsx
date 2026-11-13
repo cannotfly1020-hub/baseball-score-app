@@ -23,6 +23,7 @@ export function MatchScoreboard({
   onTogglePhoto,
   photoOpen,
   canConfirm,
+  confirmLabel = "試合データを保存する（確定）",
 }: {
   teamName: string;
   opponent: string;
@@ -41,6 +42,7 @@ export function MatchScoreboard({
   onTogglePhoto: () => void;
   photoOpen: boolean;
   canConfirm: boolean;
+  confirmLabel?: string;
 }) {
   const ourR = ourInnings.reduce((a, b) => a + b, 0);
   const theirR = theirInnings.reduce((a, b) => a + b, 0);
@@ -55,7 +57,7 @@ export function MatchScoreboard({
           disabled={!canConfirm}
           onClick={onConfirm}
         >
-          確定済み
+          {confirmLabel}
         </button>
         <button
           type="button"

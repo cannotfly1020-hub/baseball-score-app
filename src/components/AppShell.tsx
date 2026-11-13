@@ -19,6 +19,7 @@ export function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [rosterOpen, setRosterOpen] = useState(false);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [editMatch, setEditMatch] = useState<MatchRecord | null>(null);
   const consentResolver = useRef<((ok: boolean) => void) | null>(null);
 
   useEffect(() => {
@@ -87,6 +88,9 @@ export function AppShell() {
               consentAccepted={data.settings.aiConsentAccepted}
               onRequestConsent={requestConsent}
               onSaveMatch={(match: MatchRecord) => persist(upsertMatch(data, match))}
+              editMatch={editMatch}
+              onEditMatchConsumed={() => setEditMatch(null)}
+              onOpenHistory={() => setTab("history")}
             />
           ) : null}
           {tab === "stats" ? <StatsTab data={data} /> : null}
@@ -95,6 +99,10 @@ export function AppShell() {
               data={data}
               onDelete={(id) => persist(deleteMatch(data, id))}
               onOpenRoster={() => setRosterOpen(true)}
+              onEditMatch={(match) => {
+                setEditMatch(match);
+                setTab("scan");
+              }}
             />
           ) : null}
         </main>
