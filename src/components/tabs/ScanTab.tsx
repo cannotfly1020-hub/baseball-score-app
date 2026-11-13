@@ -215,6 +215,9 @@ export function ScanTab({
     setStatus("画像を前処理中（高コントラスト＋赤強調）…");
     setError("");
     setSavedMatch(null);
+    // 新規写真選択時はレビューを閉じ、感度スライダー付きプレビューへ戻す
+    setPlayers([]);
+    setPhotoCompareOpen(false);
     setSourceFile(file);
     setRedSensitivity(DEFAULT_RED_SENSITIVITY);
     skipNextSensitivityEffect.current = true;
@@ -225,7 +228,7 @@ export function ScanTab({
       setColorUrl(processed.colorDataUrl);
       setRedUrl(processed.redDataUrl);
       setStatus(
-        `前処理完了（${processed.width}×${processed.height}）。赤強調感度を調整してからAI解析できます。`,
+        `前処理完了（${processed.width}×${processed.height}）。赤強調感度（初期: 標準）を調整してからAI解析できます。`,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "画像処理に失敗しました");
@@ -525,11 +528,13 @@ export function ScanTab({
             画像プレビュー
           </h3>
           <ImagePreview
+            key={colorUrl ? "preview-ready" : "preview-empty"}
             colorUrl={colorUrl}
             redUrl={redUrl}
             redSensitivity={redSensitivity}
             onRedSensitivityChange={setRedSensitivity}
             sensitivityBusy={sensitivityBusy}
+            initialMode={redUrl ? "red" : "color"}
           />
         </div>
       ) : (
@@ -575,6 +580,7 @@ export function ScanTab({
                 redSensitivity={redSensitivity}
                 onRedSensitivityChange={setRedSensitivity}
                 sensitivityBusy={sensitivityBusy}
+                initialMode="red"
               />
             </div>
           ) : null}

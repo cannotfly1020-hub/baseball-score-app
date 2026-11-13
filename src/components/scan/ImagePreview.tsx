@@ -14,19 +14,22 @@ export function ImagePreview({
   redSensitivity = DEFAULT_RED_SENSITIVITY,
   onRedSensitivityChange,
   sensitivityBusy = false,
+  /** 解析後の見比べなど、最初から赤抽出を見せたい場合 */
+  initialMode = "color",
 }: {
   colorUrl: string | null;
   redUrl: string | null;
   redSensitivity?: RedSensitivity;
   onRedSensitivityChange?: (value: RedSensitivity) => void;
   sensitivityBusy?: boolean;
+  initialMode?: "color" | "red";
 }) {
-  const [mode, setMode] = useState<"color" | "red">("color");
+  const [mode, setMode] = useState<"color" | "red">(initialMode);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
 
   const src = mode === "color" ? colorUrl : redUrl;
-  if (!src) {
+  if (!src && !colorUrl && !redUrl) {
     return (
       <div className="preview-frame">
         <p className="muted" style={{ color: "#cbd5e1", padding: 16, textAlign: "center" }}>
@@ -39,7 +42,7 @@ export function ImagePreview({
   }
 
   return (
-    <div>
+    <div className="image-preview">
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
         <button
           type="button"
@@ -62,7 +65,7 @@ export function ImagePreview({
       <div className="preview-frame">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={src}
+          src={(mode === "color" ? colorUrl : redUrl) || colorUrl || redUrl || ""}
           alt={mode === "color" ? "加工なし高解像度カラー原本" : "赤強調画像"}
           style={{
             transform: `scale(${zoom}) rotate(${rotation}deg)`,
@@ -71,10 +74,10 @@ export function ImagePreview({
         />
       </div>
 
-      {mode === "red" && onRedSensitivityChange ? (
+      {onRedSensitivityChange ? (
         <div className="sensitivity-panel">
           <div className="sensitivity-header">
-            <span className="sensitivity-title">赤強調の強度</span>
+            <span className="sensitivity-title">赤強調の感度</span>
             <span className="sensitivity-value">
               {sensitivityLabel(redSensitivity)}（{Math.round(redSensitivity)}）
             </span>
@@ -85,17 +88,22 @@ export function ImagePreview({
             max={100}
             step={1}
             value={redSensitivity}
-            aria-label="赤強調の強度"
-            onChange={(e) => onRedSensitivityChange(Number(e.target.value))}
+            aria-label="赤強調の感度"
+            onChange={(e) => {
+              const next = Number(e.target.value);
+              // 調整時は赤抽出プレビューへ切り替え、変化をすぐ確認できるようにする
+              if (mode !== "red") setMode("red");
+              onRedSensitivityChange(next);
+            }}
             className="sensitivity-slider"
           />
           <div className="sensitivity-labels">
-            <span>原本 (0)</span>
-            <span>自然 (50)</span>
-            <span>最大 (100)</span>
+            <span>弱</span>
+            <span>標準</span>
+            <span>強</span>
           </div>
           <p className="muted" style={{ marginTop: 6, fontSize: "0.75rem" }}>
-            線の細さはそのまま、赤みのある画素の彩度だけを上げます（ベタ塗りなし）。0は加工なし。見やすい位置にしてから「AI解析」を押してください。
+            初期値は標準です。赤ペン（菱形のなぞり・得点●）が見やすい位置にしてから「AI解析」を押してください。
             {sensitivityBusy ? " 再処理中…" : ""}
           </p>
         </div>
