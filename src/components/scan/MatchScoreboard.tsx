@@ -24,6 +24,8 @@ export function MatchScoreboard({
   photoOpen,
   canConfirm,
   confirmLabel = "試合データを保存する（確定）",
+  /** 自チーム得点を個人得点●から自動集計（入力ロック） */
+  syncOurRunsFromScored = true,
 }: {
   teamName: string;
   opponent: string;
@@ -43,6 +45,7 @@ export function MatchScoreboard({
   photoOpen: boolean;
   canConfirm: boolean;
   confirmLabel?: string;
+  syncOurRunsFromScored?: boolean;
 }) {
   const ourR = ourInnings.reduce((a, b) => a + b, 0);
   const theirR = theirInnings.reduce((a, b) => a + b, 0);
@@ -68,6 +71,12 @@ export function MatchScoreboard({
         </button>
       </div>
 
+      {syncOurRunsFromScored ? (
+        <p className="scoreboard-hint">
+          自チームの各回得点は、打撃表の菱形中央「得点●」の個数から自動集計されます。
+        </p>
+      ) : null}
+
       <div className="scoreboard-scroll">
         <table className="scoreboard-table">
           <thead>
@@ -88,15 +97,23 @@ export function MatchScoreboard({
               </th>
               {ourInnings.map((v, i) => (
                 <td key={`our-${i}`}>
-                  <input
-                    className="scoreboard-cell-input"
-                    type="number"
-                    min={0}
-                    inputMode="numeric"
-                    value={v}
-                    aria-label={`自チーム ${i + 1}回`}
-                    onChange={(e) => onOurInningChange(i, Math.max(0, Number(e.target.value) || 0))}
-                  />
+                  {syncOurRunsFromScored ? (
+                    <span className="scoreboard-cell-static" aria-label={`自チーム ${i + 1}回`}>
+                      {v}
+                    </span>
+                  ) : (
+                    <input
+                      className="scoreboard-cell-input"
+                      type="number"
+                      min={0}
+                      inputMode="numeric"
+                      value={v}
+                      aria-label={`自チーム ${i + 1}回`}
+                      onChange={(e) =>
+                        onOurInningChange(i, Math.max(0, Number(e.target.value) || 0))
+                      }
+                    />
+                  )}
                 </td>
               ))}
               <td className="scoreboard-total">{ourR}</td>

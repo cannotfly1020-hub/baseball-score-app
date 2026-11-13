@@ -39,9 +39,15 @@ export type HitDirection = "" | "投" | "捕" | "一" | "二" | "三" | "遊" | 
 export type OutKind = "" | "ゴロ" | "フライ" | "ライナー";
 export type StrikeoutKind = "" | "空" | "見";
 
+/** 菱形中央の生還丸の種類（●塗りつぶし / 〇白抜き） */
+export type RunMarkKind = "" | "filled" | "open";
+
 /** 打席マスの付加情報（得点●・打点・方向など） */
 export interface AtBatCellMeta {
+  /** 菱形中央に生還丸がありホームインした */
   scored?: boolean;
+  /** filled=●（自責点寄り） / open=〇（非自責点寄り） */
+  runMark?: RunMarkKind;
   rbi?: number;
   direction?: HitDirection;
   outKind?: OutKind;
