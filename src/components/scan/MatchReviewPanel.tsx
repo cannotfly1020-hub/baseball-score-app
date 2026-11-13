@@ -110,7 +110,7 @@ export function MatchReviewPanel({
             </p>
           )}
           <ImagePreview
-            key={`compare-${activePage}-${active.colorUrl || "none"}`}
+            // 1枚目／2枚目切替・感度変更でもズーム／パンを維持
             colorUrl={active.colorUrl}
             redUrl={active.redUrl}
             redSensitivity={active.redSensitivity}
