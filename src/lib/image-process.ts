@@ -2,11 +2,13 @@
  * Browser Canvas によるスコアブック画像前処理。
  * 1) 高コントラスト原本（黒文字・枠線を鮮明化、長辺 ≤1600px）
  * 2) 赤強調画像（線の細さを保ったまま赤ペン彩度を上げる）
- * 解析送信は FormData バイナリで合計 ≤1.5MB（全体＋上下2分割）。
+ * 解析送信は FormData バイナリで合計 ≤1.2MB 目標（絶対上限 1.5MB）。
+ * サーバ側は画像加工せず Base64 中継のみ。
  */
 
 import {
   ANALYZE_MAX_PAYLOAD_BYTES,
+  ANALYZE_TARGET_PAYLOAD_BYTES,
   IMAGE_JPEG_QUALITY,
   IMAGE_MAX_SIDE,
 } from "./constants";
@@ -18,7 +20,7 @@ export interface ProcessedImages {
   height: number;
 }
 
-/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 1.5MB） */
+/** AI解析APIへ送る最適化済み画像セット（合計 ≤ 1.2MB 目標） */
 export interface AnalyzeImagePayload {
   colorDataUrl: string;
   redDataUrl: string;
@@ -295,18 +297,22 @@ export function dataUrlToBlob(dataUrl: string, mime = "image/jpeg"): Blob {
 }
 
 /**
- * 全体俯瞰＋上下2分割（打順1–5 / 6–9）を必ず用意し、合計 ≤1.5MB に収める。
- * FormData バイナリ送信用。
+ * 全体俯瞰＋上下2分割（打順1–5 / 6–9）を用意し、合計 ≤1.2MB（目標）に収める。
+ * 長辺最大 1600px・JPEG 品質は 0.82 から段階的に下げる。
  */
 export async function prepareAnalyzeImages(
   colorDataUrl: string,
   redDataUrl: string,
   options?: { maxBytes?: number },
 ): Promise<AnalyzeImagePayload> {
-  const maxBytes = options?.maxBytes ?? ANALYZE_MAX_PAYLOAD_BYTES;
-  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.68, 0.58, 0.5];
-  const overviewSides = [1200, 1100, 1000, 900];
-  const halfSides = [IMAGE_MAX_SIDE, 1400, 1200, 1000, 900];
+  const maxBytes = options?.maxBytes ?? ANALYZE_TARGET_PAYLOAD_BYTES;
+  const hardMax = ANALYZE_MAX_PAYLOAD_BYTES;
+  // 品質は標準 0.82 から。サイズが厳しければ下げる。
+  const qualitySteps = [IMAGE_JPEG_QUALITY, 0.75, 0.68, 0.6, 0.52, 0.45];
+  const overviewSides = [1100, 1000, 900, 800, 700];
+  const halfSides = [IMAGE_MAX_SIDE, 1400, 1200, 1000, 900, 800];
+
+  let lastPayload: AnalyzeImagePayload | null = null;
 
   for (let i = 0; i < halfSides.length; i++) {
     const halfSide = halfSides[i];
@@ -339,15 +345,16 @@ export async function prepareAnalyzeImages(
         payload.redTopDataUrl,
         payload.redBottomDataUrl,
       );
+      lastPayload = payload;
       if (payload.approxBytes <= maxBytes) return payload;
     }
   }
 
-  // 最終フォールバック（必ず halves 付きで返す）
-  const color = await reencodeDataUrl(colorDataUrl, 800, 0.45);
-  const red = await reencodeDataUrl(redDataUrl, 800, 0.45);
-  const colorHalves = await splitVerticalHalves(color.dataUrl, 0.45);
-  const redHalves = await splitVerticalHalves(red.dataUrl, 0.45);
+  // 最終フォールバック
+  const color = await reencodeDataUrl(colorDataUrl, 700, 0.4);
+  const red = await reencodeDataUrl(redDataUrl, 700, 0.4);
+  const colorHalves = await splitVerticalHalves(color.dataUrl, 0.4);
+  const redHalves = await splitVerticalHalves(red.dataUrl, 0.4);
   const payload: AnalyzeImagePayload = {
     colorDataUrl: color.dataUrl,
     redDataUrl: red.dataUrl,
@@ -356,8 +363,8 @@ export async function prepareAnalyzeImages(
     redTopDataUrl: redHalves.top,
     redBottomDataUrl: redHalves.bottom,
     approxBytes: 0,
-    maxSide: 800,
-    jpegQuality: 0.45,
+    maxSide: 700,
+    jpegQuality: 0.4,
     splitHalves: true,
   };
   payload.approxBytes = approxDecodedBytes(
@@ -368,6 +375,9 @@ export async function prepareAnalyzeImages(
     payload.redTopDataUrl,
     payload.redBottomDataUrl,
   );
+  if (payload.approxBytes > hardMax && lastPayload && lastPayload.approxBytes <= hardMax) {
+    return lastPayload;
+  }
   return payload;
 }
 
@@ -408,6 +418,12 @@ export function buildAnalyzeFormData(args: {
     }),
   );
   return fd;
+}
+
+/** 自己テスト用: dryRun フラグ付き FormData */
+export function appendDryRunFlag(form: FormData): FormData {
+  form.append("dryRun", "1");
+  return form;
 }
 
 export function rotateDataUrl(dataUrl: string, degrees: number): Promise<string> {

@@ -118,7 +118,10 @@ export const IMAGE_MAX_SIDE = 1600;
 /** JPEG 出力品質（0–1） */
 export const IMAGE_JPEG_QUALITY = 0.82;
 
-/** FormData 送信の合計バイナリ上限（1.5MB） */
+/** FormData 送信の目標合計サイズ（1.2MB・これを目指して圧縮） */
+export const ANALYZE_TARGET_PAYLOAD_BYTES = Math.floor(1.2 * 1024 * 1024);
+
+/** FormData 送信の絶対上限（1.5MB・超えたら送信拒否） */
 export const ANALYZE_MAX_PAYLOAD_BYTES = Math.floor(1.5 * 1024 * 1024);
 
 export const STORAGE_KEY = "baseball-scorebook-v1";
