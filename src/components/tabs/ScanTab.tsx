@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AtBatMatrix } from "@/components/scan/AtBatMatrix";
-import { DualPageSlots, type PageSlotId } from "@/components/scan/DualPageSlots";
+import {
+  DualPagePreviewTabs,
+  DualPageSlots,
+  type PageSlotId,
+} from "@/components/scan/DualPageSlots";
 import { HeroCard } from "@/components/scan/HeroCard";
 import { ImagePreview } from "@/components/scan/ImagePreview";
 import { MatchScoreboard } from "@/components/scan/MatchScoreboard";
@@ -534,10 +538,16 @@ export function ScanTab({
     fileRef.current?.click();
   };
 
-  const clearPage2 = () => {
+  const clearPage = (slot: PageSlotId) => {
+    if (slot === 1) {
+      setPage1(emptyPage());
+      setActivePage(page2.colorUrl ? 2 : 1);
+      setStatus("1枚目を削除しました。");
+      return;
+    }
     setPage2(emptyPage());
     setActivePage(1);
-    setStatus("2枚目をクリアしました。1枚目のみで解析できます。");
+    setStatus("2枚目を削除しました。1枚目のみで解析できます。");
   };
 
   return (
@@ -618,7 +628,7 @@ export function ScanTab({
           page1Ready={Boolean(page1.colorUrl)}
           page2Ready={hasPage2}
           onPickPage={openPicker}
-          onClearPage2={clearPage2}
+          onClearPage={clearPage}
         />
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -649,20 +659,37 @@ export function ScanTab({
         <div className="panel">
           <p className="section-label">PREVIEW</p>
           <h3 className="section-title" style={{ fontSize: "1.05rem" }}>
-            {activePage}枚目の画像プレビュー
+            画像プレビュー
           </h3>
+          {(page1.colorUrl || page2.colorUrl) && (page1.colorUrl && page2.colorUrl) ? (
+            <DualPagePreviewTabs
+              activePage={activePage}
+              onSelectPage={setActivePage}
+              page1Ready={Boolean(page1.colorUrl)}
+              page2Ready={Boolean(page2.colorUrl)}
+            />
+          ) : page1.colorUrl || page2.colorUrl ? (
+            <p className="muted" style={{ marginBottom: 10, fontSize: "0.8rem" }}>
+              {activePage}枚目を表示中
+              {page1.colorUrl && !page2.colorUrl ? "（2枚目は任意）" : ""}
+            </p>
+          ) : null}
           <ImagePreview
             key={`${activePage}-${active.colorUrl ? "ready" : "empty"}`}
             colorUrl={active.colorUrl}
             redUrl={active.redUrl}
             redSensitivity={active.redSensitivity}
-            onRedSensitivityChange={(value) => {
-              if (activePage === 1) {
-                setPage1((prev) => ({ ...prev, redSensitivity: value }));
-              } else {
-                setPage2((prev) => ({ ...prev, redSensitivity: value }));
-              }
-            }}
+            onRedSensitivityChange={
+              active.colorUrl
+                ? (value) => {
+                    if (activePage === 1) {
+                      setPage1((prev) => ({ ...prev, redSensitivity: value }));
+                    } else {
+                      setPage2((prev) => ({ ...prev, redSensitivity: value }));
+                    }
+                  }
+                : undefined
+            }
             sensitivityBusy={active.sensitivityBusy}
             initialMode={active.redUrl ? "red" : "color"}
           />
@@ -704,25 +731,13 @@ export function ScanTab({
 
           {photoCompareOpen ? (
             <div className="photo-compare">
-              {(page1.colorUrl || page2.colorUrl) ? (
-                <div className="dual-page-tabs" style={{ marginBottom: 10 }}>
-                  <button
-                    type="button"
-                    className={`dual-page-tab${activePage === 1 ? " active" : ""}`}
-                    disabled={!page1.colorUrl}
-                    onClick={() => setActivePage(1)}
-                  >
-                    1枚目
-                  </button>
-                  <button
-                    type="button"
-                    className={`dual-page-tab${activePage === 2 ? " active" : ""}`}
-                    disabled={!page2.colorUrl}
-                    onClick={() => setActivePage(2)}
-                  >
-                    2枚目
-                  </button>
-                </div>
+              {page1.colorUrl || page2.colorUrl ? (
+                <DualPagePreviewTabs
+                  activePage={activePage}
+                  onSelectPage={setActivePage}
+                  page1Ready={Boolean(page1.colorUrl)}
+                  page2Ready={Boolean(page2.colorUrl)}
+                />
               ) : (
                 <p className="muted" style={{ marginBottom: 8 }}>
                   このセッションに写真がありません。新規撮影すると見比べできます。
