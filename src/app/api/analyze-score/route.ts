@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { NextResponse } from "next/server";
 import {
   attachAnalyzeJobPromise,
@@ -10,6 +10,7 @@ import {
   ANALYZE_MAX_PAYLOAD_BYTES,
   BATTING_GROUP_SPLITS,
   emptyInnings,
+  INNING_KEYS,
   normalizeResult,
 } from "@/lib/constants";
 import {
@@ -26,7 +27,56 @@ import {
   reconcileInningScores,
 } from "@/lib/score-reconcile";
 import { normalizePlayerRecord } from "@/lib/stats";
-import type { PlayerAtBat, RosterPlayer } from "@/lib/types";
+import type {
+  AtBatCellMeta,
+  CellMetaMap,
+  InningKey,
+  InningsMap,
+  PlayerAtBat,
+  RosterPlayer,
+} from "@/lib/types";
+
+export type TokenUsage = {
+  promptTokenCount: number;
+  candidatesTokenCount: number;
+  thoughtsTokenCount: number;
+  totalTokenCount: number;
+};
+
+function emptyUsage(): TokenUsage {
+  return {
+    promptTokenCount: 0,
+    candidatesTokenCount: 0,
+    thoughtsTokenCount: 0,
+    totalTokenCount: 0,
+  };
+}
+
+function addUsage(a: TokenUsage, b: Partial<TokenUsage> | null | undefined): TokenUsage {
+  return {
+    promptTokenCount: a.promptTokenCount + (b?.promptTokenCount || 0),
+    candidatesTokenCount: a.candidatesTokenCount + (b?.candidatesTokenCount || 0),
+    thoughtsTokenCount: a.thoughtsTokenCount + (b?.thoughtsTokenCount || 0),
+    totalTokenCount: a.totalTokenCount + (b?.totalTokenCount || 0),
+  };
+}
+
+function readUsage(response: {
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}): TokenUsage {
+  const u = response.usageMetadata || {};
+  return {
+    promptTokenCount: Number(u.promptTokenCount) || 0,
+    candidatesTokenCount: Number(u.candidatesTokenCount) || 0,
+    thoughtsTokenCount: Number(u.thoughtsTokenCount) || 0,
+    totalTokenCount: Number(u.totalTokenCount) || 0,
+  };
+}
 
 /** 長時間 Gemini 中継用。画像加工は一切せず Base64 化して転送するだけ。 */
 export const maxDuration = 300;
@@ -275,23 +325,120 @@ export async function GET(request: Request) {
   });
 }
 
+/** Flash 最優先。argon/pro はフォールバック。 */
+const FLASH_FIRST_ORDER = [
+  "gemini-3.8-flash",
+  "gemini-3.5-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+] as const;
+
+function isFlashModel(id: string): boolean {
+  return /flash/i.test(id);
+}
+
+function isHeavyProModel(id: string): boolean {
+  return /(?:^|[.-])(pro|argon|carbon|hydrogen)(?:$|[.-])/i.test(id) && !isFlashModel(id);
+}
+
+function preferFlashModels(candidates: string[], stickyPreferred?: string): string[] {
+  const flash: string[] = [];
+  const mid: string[] = [];
+  const heavy: string[] = [];
+  for (const id of candidates) {
+    if (isFlashModel(id)) flash.push(id);
+    else if (isHeavyProModel(id)) heavy.push(id);
+    else mid.push(id);
+  }
+  flash.sort((a, b) => {
+    const ia = FLASH_FIRST_ORDER.findIndex((p) => p === a);
+    const ib = FLASH_FIRST_ORDER.findIndex((p) => p === b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+  });
+  const ordered = [...flash, ...mid, ...heavy];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ordered) {
+    const k = id.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(id);
+  }
+  if (stickyPreferred && isFlashModel(stickyPreferred)) {
+    return [stickyPreferred, ...out.filter((m) => m !== stickyPreferred)];
+  }
+  return out;
+}
+
+function isThinkingConfigError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /thinking[_ ]?(budget|level|config)|invalid.*thinking|only set only one of thinking/i.test(
+    msg,
+  );
+}
+
+/** 思考バジェット上限（精度維持しつつ長考暴走を防ぐ） */
+const THINKING_BUDGET = 2048;
+
 async function generateJsonFromParts(
   ai: GoogleGenAI,
   model: string,
   parts: ContentPart[],
-): Promise<{ text: string; parsed: unknown[] }> {
-  const response = await ai.models.generateContent({
-    model,
-    contents: [{ role: "user", parts }],
-    config: {
-      responseMimeType: "application/json",
-      temperature: 0.1,
-    },
-  });
+): Promise<{ text: string; parsed: unknown[]; usage: TokenUsage; elapsedMs: number }> {
+  const t0 = Date.now();
+  const run = async (thinkingConfig: {
+    includeThoughts: false;
+    thinkingBudget?: number;
+    thinkingLevel?: ThinkingLevel;
+  } | null) =>
+    ai.models.generateContent({
+      model,
+      contents: [{ role: "user", parts }],
+      config: {
+        responseMimeType: "application/json",
+        temperature: 0.1,
+        maxOutputTokens: 4096,
+        ...(thinkingConfig ? { thinkingConfig } : {}),
+      },
+    });
 
+  let response;
+  try {
+    response = await run({ includeThoughts: false, thinkingBudget: THINKING_BUDGET });
+  } catch (err) {
+    if (isThinkingConfigError(err)) {
+      console.warn(
+        `[analyze-score] thinkingBudget=${THINKING_BUDGET} rejected on ${model}; retry LOW`,
+        err instanceof Error ? err.message : err,
+      );
+      try {
+        response = await run({
+          includeThoughts: false,
+          thinkingLevel: ThinkingLevel.LOW,
+        });
+      } catch (err2) {
+        if (isThinkingConfigError(err2)) {
+          response = await run({ includeThoughts: false, thinkingBudget: 0 });
+        } else {
+          throw err2;
+        }
+      }
+    } else {
+      throw err;
+    }
+  }
+
+  const elapsedMs = Date.now() - t0;
+  const usage = readUsage(response);
   const text = response.text ?? "";
   if (!text) throw new Error("AIから空の応答が返りました");
-  return { text, parsed: parseJsonArray(text) };
+  console.info(
+    `[analyze-score] generateContent model=${model} elapsedMs=${elapsedMs} chars=${text.length} tokens=${JSON.stringify(usage)}`,
+  );
+  return { text, parsed: parseJsonArray(text), usage, elapsedMs };
 }
 
 async function generateWithFallback(
@@ -301,16 +448,23 @@ async function generateWithFallback(
     preferredModel?: string;
     candidateCache?: { list?: string[] };
   },
-): Promise<{ text: string; parsed: unknown[]; model: string }> {
+): Promise<{ text: string; parsed: unknown[]; model: string; usage: TokenUsage }> {
   const preferredModel = options?.preferredModel;
   const cache = options?.candidateCache;
   let candidates = cache?.list;
   if (!candidates || candidates.length === 0) {
-    candidates = await resolveGeminiModelCandidates(ai, preferredModel);
+    const resolved = await resolveGeminiModelCandidates(ai, preferredModel);
+    candidates = preferFlashModels(resolved, preferredModel);
     if (cache) cache.list = candidates;
-    console.info("[analyze-score] model candidates:", candidates.slice(0, 10).join(" → "));
+    console.info(
+      "[analyze-score] model candidates (flash-first):",
+      candidates.slice(0, 10).join(" → "),
+    );
   } else if (preferredModel) {
-    candidates = [preferredModel, ...candidates.filter((m) => m !== preferredModel)];
+    candidates = preferFlashModels(
+      [preferredModel, ...candidates.filter((m) => m !== preferredModel)],
+      isFlashModel(preferredModel) ? preferredModel : undefined,
+    );
   }
 
   let lastError: unknown;
@@ -329,28 +483,76 @@ async function generateWithFallback(
   throw new Error(formatGeminiError(lastError, candidates.join(" → ")));
 }
 
+/** スパース innings / at_bats 配列の両方を内部フルマップへ展開 */
 function mapToPlayerAtBat(row: Record<string, unknown>): PlayerAtBat {
-  const inningsRaw = (row.innings || {}) as Record<string, unknown>;
-  const cellMeta = parseAiCellMeta(row);
+  const innings: InningsMap = { ...emptyInnings() };
+  const cellMeta: CellMetaMap = {};
+
+  const atBats = Array.isArray(row.at_bats)
+    ? row.at_bats
+    : Array.isArray(row.atBats)
+      ? row.atBats
+      : null;
+
+  if (atBats) {
+    for (const raw of atBats) {
+      if (!raw || typeof raw !== "object") continue;
+      const ab = raw as Record<string, unknown>;
+      const inn = String(ab.inning ?? ab.i ?? "");
+      if (!(INNING_KEYS as readonly string[]).includes(inn)) continue;
+      const key = inn as InningKey;
+      innings[key] = normalizeResult(ab.result ?? ab.r ?? ab.label);
+      const scored = Boolean(ab.scored);
+      const rbi = Math.max(0, Number(ab.rbi) || 0);
+      const runMarkRaw = String(ab.run_mark ?? ab.runMark ?? "");
+      const runMark =
+        runMarkRaw === "filled" || runMarkRaw === "open"
+          ? runMarkRaw
+          : scored
+            ? "filled"
+            : ("" as const);
+      const dir = String(ab.dir ?? ab.direction ?? "") as AtBatCellMeta["direction"];
+      const lc = ab.lc === true || ab.lowConfidence === true;
+      const meta: AtBatCellMeta = {};
+      if (scored) meta.scored = true;
+      if (runMark) meta.runMark = runMark;
+      if (rbi > 0) meta.rbi = rbi;
+      if (dir) meta.direction = dir;
+      if (lc) {
+        // lowConfidence は result=要確認 に反映済み想定。メタは最小のまま。
+        if (innings[key] !== "要確認" && innings[key] !== "なし") {
+          // 明示 lc なら要確認へ寄せず結果は維持（UI は highlight で示す）
+        }
+      }
+      if (Object.keys(meta).length > 0) cellMeta[key] = meta;
+    }
+  } else {
+    const inningsRaw = (row.innings || {}) as Record<string, unknown>;
+    for (const key of INNING_KEYS) {
+      if (inningsRaw[key] == null || inningsRaw[key] === "") continue;
+      // スパース: 明示されたキーのみ上書き（未指定は emptyInnings の「なし」）
+      const v = String(inningsRaw[key]).trim();
+      if (v === "なし") continue;
+      innings[key] = normalizeResult(inningsRaw[key]);
+    }
+    const parsedMeta = parseAiCellMeta(row);
+    if (parsedMeta) Object.assign(cellMeta, parsedMeta);
+  }
+
+  const rbiFromCells = Object.values(cellMeta).reduce(
+    (sum, m) => sum + (m?.rbi || 0),
+    0,
+  );
   const mapped = normalizePlayerRecord({
     batting_order: Number(row.batting_order) || 0,
     uniform_number: String(row.uniform_number ?? ""),
     player_name: String(row.player_name ?? ""),
     is_substitute: Boolean(row.is_substitute),
     position: String(row.position ?? "").trim() || undefined,
-    rbi: Number(row.rbi) || 0,
+    rbi: Math.max(Number(row.rbi) || 0, rbiFromCells),
     stolen_bases: Number(row.stolen_bases) || 0,
-    innings: {
-      ...emptyInnings(),
-      "1": normalizeResult(inningsRaw["1"]),
-      "2": normalizeResult(inningsRaw["2"]),
-      "3": normalizeResult(inningsRaw["3"]),
-      "4": normalizeResult(inningsRaw["4"]),
-      "5": normalizeResult(inningsRaw["5"]),
-      "6": normalizeResult(inningsRaw["6"]),
-      "7": normalizeResult(inningsRaw["7"]),
-    },
-    cellMeta,
+    innings,
+    cellMeta: Object.keys(cellMeta).length > 0 ? cellMeta : undefined,
     highlight: String(row.highlight ?? ""),
   });
   return finalizePlayersAfterAi([mapped])[0];
@@ -364,10 +566,11 @@ async function runAnalyzePipeline(
   const mimeType = "image/jpeg";
   const ai = new GoogleGenAI({ apiKey: parsed.apiKey });
   const candidateCache: { list?: string[] } = {};
+  let usageTotal = emptyUsage();
 
   onStage?.("roster");
   console.info(
-    `[analyze-score] pipeline start bytes=${parsed.totalBytes} t=0ms`,
+    `[analyze-score] pipeline start bytes=${parsed.totalBytes} t=0ms thinkingBudget=${THINKING_BUDGET}`,
   );
 
   const step1 = await generateWithFallback(
@@ -381,7 +584,10 @@ async function runAnalyzePipeline(
     ],
     { candidateCache },
   );
-  console.info(`[analyze-score] step1 done model=${step1.model} t=${Date.now() - t0}ms`);
+  usageTotal = addUsage(usageTotal, step1.usage);
+  console.info(
+    `[analyze-score] step1 done model=${step1.model} t=${Date.now() - t0}ms usage=${JSON.stringify(step1.usage)}`,
+  );
 
   const rosterExtracted = applyRosterMatching(
     step1.parsed.map((row) => {
@@ -396,60 +602,57 @@ async function runAnalyzePipeline(
     parsed.roster,
   );
 
-  const groupResults: Array<{
-    group: string;
-    players: PlayerAtBat[];
-    raw: unknown[];
-    model: string;
-    aiInningScores: number[] | null;
-  }> = [];
+  onStage?.("upper+lower");
+  const groupResults = await Promise.all(
+    BATTING_GROUP_SPLITS.map(async (group) => {
+      const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
+      const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
+      const prompt = buildGroupDetailsPrompt({
+        fromOrder: group.from,
+        toOrder: group.to,
+        roster: parsed.roster,
+        rosterHints: rosterExtracted,
+        pageHint: parsed.matchMeta.pageHint || "single",
+      });
 
-  for (const group of BATTING_GROUP_SPLITS) {
-    onStage?.(group.id);
-    const colorHalf = group.id === "upper" ? parsed.colorTopB64 : parsed.colorBottomB64;
-    const redHalf = group.id === "upper" ? parsed.redTopB64 : parsed.redBottomB64;
-    const prompt = buildGroupDetailsPrompt({
-      fromOrder: group.from,
-      toOrder: group.to,
-      roster: parsed.roster,
-      rosterHints: rosterExtracted,
-      pageHint: parsed.matchMeta.pageHint || "single",
-    });
+      const result = await generateWithFallback(
+        ai,
+        [
+          { text: prompt },
+          {
+            text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
+          },
+          { inlineData: { mimeType, data: colorHalf } },
+          {
+            text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
+          },
+          { inlineData: { mimeType, data: redHalf } },
+        ],
+        { preferredModel: step1.model, candidateCache },
+      );
+      console.info(
+        `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms usage=${JSON.stringify(result.usage)}`,
+      );
 
-    const result = await generateWithFallback(
-      ai,
-      [
-        { text: prompt },
-        {
-          text: `【${group.label}・高コントラスト原本】黒文字（1-3,5-3,4F,K,B,WP,E 等）と左端選手名を精密に読むこと。`,
-        },
-        { inlineData: { mimeType, data: colorHalf } },
-        {
-          text: `【${group.label}・赤強調】菱形上の赤ペン安打線・得点●・進塁を精密に読むこと。`,
-        },
-        { inlineData: { mimeType, data: redHalf } },
-      ],
-      { preferredModel: step1.model, candidateCache },
-    );
-    console.info(
-      `[analyze-score] group ${group.id} done model=${result.model} t=${Date.now() - t0}ms`,
-    );
+      const playerRows = extractPlayersFromAiPayload(result.parsed);
+      const players = applyRosterMatching(
+        playerRows
+          .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
+          .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
+        parsed.roster,
+      );
+      return {
+        group: group.id,
+        players,
+        raw: result.parsed,
+        model: result.model,
+        usage: result.usage,
+        aiInningScores: extractAiInningScores(result.parsed),
+      };
+    }),
+  );
 
-    const playerRows = extractPlayersFromAiPayload(result.parsed);
-    const players = applyRosterMatching(
-      playerRows
-        .map((row) => mapToPlayerAtBat(row as Record<string, unknown>))
-        .filter((p) => p.batting_order >= group.from && p.batting_order <= group.to),
-      parsed.roster,
-    );
-    groupResults.push({
-      group: group.id,
-      players,
-      raw: result.parsed,
-      model: result.model,
-      aiInningScores: extractAiInningScores(result.parsed),
-    });
-  }
+  for (const g of groupResults) usageTotal = addUsage(usageTotal, g.usage);
 
   onStage?.("finalize");
   let match_date = parsed.matchMeta.match_date || "";
@@ -499,8 +702,9 @@ async function runAnalyzePipeline(
       : null;
   const reconciled = reconcileInningScores(players, mergedAiScores);
 
+  const elapsedMs = Date.now() - t0;
   console.info(
-    `[analyze-score] pipeline done players=${players.length} t=${Date.now() - t0}ms`,
+    `[analyze-score] pipeline done players=${players.length} t=${elapsedMs}ms usageTotal=${JSON.stringify(usageTotal)}`,
   );
 
   return {
@@ -509,15 +713,21 @@ async function runAnalyzePipeline(
     match_date,
     opponent,
     model: groupResults[0]?.model || step1.model,
-    pipeline: "async-job+serial-roster+upper/lower-relay",
+    pipeline: "slim-atbats+flash-first+parallel+thinkingBudget2048",
     bytesReceived: parsed.totalBytes,
-    elapsedMs: Date.now() - t0,
+    elapsedMs,
+    elapsedSec: Math.round((elapsedMs / 1000) * 10) / 10,
+    usageMetadata: usageTotal,
+    promptTokenCount: usageTotal.promptTokenCount,
+    candidatesTokenCount: usageTotal.candidatesTokenCount,
+    thoughtsTokenCount: usageTotal.thoughtsTokenCount,
+    totalTokenCount: usageTotal.totalTokenCount,
     inningScores: reconciled.ourInnings,
     inningScoresMatched: reconciled.matched,
     aiInningScores: reconciled.aiInningScores,
     raw: {
       step1: step1.parsed,
-      groups: groupResults.map((g) => ({ group: g.group, raw: g.raw })),
+      groups: groupResults.map((g) => ({ group: g.group, raw: g.raw, usage: g.usage })),
     },
   };
 }
